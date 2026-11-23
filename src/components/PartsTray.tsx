@@ -1,4 +1,5 @@
 import React from 'react';
+import { type Language, pickText, t } from '../core/i18n';
 import type { CircuitComponent, TrayItemTemplate, WireColor } from '../engine/types';
 import { ComponentArt, ComponentSvgDefs } from './ComponentArt';
 
@@ -8,29 +9,30 @@ interface PartsTrayProps {
   selectedTemplateId: string | null;
   wireColor: WireColor;
   isKidMode: boolean;
+  lang: Language;
   onSelectTemplate: (template: TrayItemTemplate | null) => void;
   onSelectWireColor: (color: WireColor) => void;
 }
 
-const WIRE_SWATCHES: { color: WireColor; hex: string; label: string }[] = [
-  { color: 'red', hex: '#D94436', label: 'Red wire' },
-  { color: 'black', hex: '#2C333B', label: 'Black wire' },
-  { color: 'blue', hex: '#2D72C8', label: 'Blue wire' },
-  { color: 'amber', hex: '#E09A1F', label: 'Yellow wire' },
-  { color: 'green', hex: '#2A9158', label: 'Green wire' },
+const WIRE_SWATCHES: { color: WireColor; hex: string; label: Record<Language, string> }[] = [
+  { color: 'red', hex: '#D94436', label: { en: 'Red wire', pl: 'Czerwony przewód' } },
+  { color: 'black', hex: '#2C333B', label: { en: 'Black wire', pl: 'Czarny przewód' } },
+  { color: 'blue', hex: '#2D72C8', label: { en: 'Blue wire', pl: 'Niebieski przewód' } },
+  { color: 'amber', hex: '#E09A1F', label: { en: 'Yellow wire', pl: 'Żółty przewód' } },
+  { color: 'green', hex: '#2A9158', label: { en: 'Green wire', pl: 'Zielony przewód' } },
 ];
 
-function previewComponent(t: TrayItemTemplate): CircuitComponent {
+function previewComponent(tItem: TrayItemTemplate): CircuitComponent {
   return {
-    id: `mini-${t.templateId}`,
-    kind: t.kind,
+    id: `mini-${tItem.templateId}`,
+    kind: tItem.kind,
     a: { col: 0, row: 0 },
     b: { col: 1, row: 0 },
-    voltage: t.voltage,
-    resistance: t.resistance,
-    rheostatMin: t.rheostatMin,
-    rheostatMax: t.rheostatMax,
-    ledColor: t.ledColor,
+    voltage: tItem.voltage,
+    resistance: tItem.resistance,
+    rheostatMin: tItem.rheostatMin,
+    rheostatMax: tItem.rheostatMax,
+    ledColor: tItem.ledColor,
     closed: false,
   };
 }
@@ -41,13 +43,14 @@ export const PartsTray: React.FC<PartsTrayProps> = ({
   selectedTemplateId,
   wireColor,
   isKidMode,
+  lang,
   onSelectTemplate,
   onSelectWireColor,
 }) => {
   const isWireMode = selectedTemplateId === null;
 
   return (
-    <footer className="parts-dock" aria-label="Circuit parts tray">
+    <footer className="parts-dock" aria-label={lang === 'pl' ? 'Zasobnik części' : 'Circuit parts tray'}>
       <div className="dock-row">
         {/* Jumper Wire Tool & Color Swatches */}
         <div className="wire-tool-group">
@@ -55,14 +58,14 @@ export const PartsTray: React.FC<PartsTrayProps> = ({
             type="button"
             className={`wire-tool-btn ${isWireMode ? 'active' : ''}`}
             onClick={() => onSelectTemplate(null)}
-            title="Drag between any two sockets to snap a jumper wire"
+            title={t(lang, 'wireDragTitle')}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
               <path d="M4 17C8 7 16 7 20 17" />
               <circle cx="4" cy="17" r="2.2" fill="currentColor" />
               <circle cx="20" cy="17" r="2.2" fill="currentColor" />
             </svg>
-            <span>{isKidMode ? 'Wire' : 'Wire'}</span>
+            <span>{t(lang, 'wireTool')}</span>
           </button>
 
           {WIRE_SWATCHES.map((s) => (
@@ -71,7 +74,7 @@ export const PartsTray: React.FC<PartsTrayProps> = ({
               type="button"
               className={`wire-swatch ${wireColor === s.color && isWireMode ? 'selected' : ''}`}
               style={{ background: s.hex }}
-              aria-label={s.label}
+              aria-label={s.label[lang]}
               onClick={() => {
                 onSelectWireColor(s.color);
                 onSelectTemplate(null);
@@ -96,7 +99,7 @@ export const PartsTray: React.FC<PartsTrayProps> = ({
               className={`part-card ${selected ? 'selected' : ''}`}
               disabled={depleted}
               onClick={() => onSelectTemplate(selected ? null : item)}
-              title={item.name}
+              title={pickText(item.name, lang)}
             >
               <span className="part-count-badge">
                 {remaining === null ? '∞' : `×${remaining}`}
@@ -108,11 +111,12 @@ export const PartsTray: React.FC<PartsTrayProps> = ({
                   length={76}
                   fanAngle={20}
                   isKidMode={isKidMode}
+                  lang={lang}
                   isMini
                 />
               </svg>
               <span className="part-card-label">
-                {isKidMode && item.kind === 'resistor' ? 'Helper' : item.shortLabel}
+                {pickText(item.shortLabel, lang)}
               </span>
             </button>
           );
@@ -120,9 +124,7 @@ export const PartsTray: React.FC<PartsTrayProps> = ({
 
         {tray.length === 0 && (
           <span className="tray-hint-text">
-            {isKidMode
-              ? 'Drag from one hole to another to plug in a wire!'
-              : 'Swipe between any two sockets to snap a jumper wire.'}
+            {isKidMode ? t(lang, 'wireHintKid') : t(lang, 'wireHintAdult')}
           </span>
         )}
       </div>

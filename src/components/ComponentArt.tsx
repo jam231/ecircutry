@@ -1,4 +1,5 @@
 import React from 'react';
+import { type Language, t } from '../core/i18n';
 import type { CircuitComponent, ComponentTelemetry, LedColor } from '../engine/types';
 import { formatOhms, getResistorBands } from '../engine/resistorColors';
 
@@ -10,6 +11,7 @@ interface ComponentArtProps {
   /** Animated fan blade rotation angle in degrees */
   fanAngle: number;
   isKidMode: boolean;
+  lang?: Language;
   isSelected?: boolean;
   /** Render compact preview for bottom parts tray */
   isMini?: boolean;
@@ -35,6 +37,7 @@ export const ComponentArt: React.FC<ComponentArtProps> = ({
   length,
   fanAngle,
   isKidMode,
+  lang = 'en',
   isSelected,
   isMini = false,
 }) => {
@@ -375,7 +378,7 @@ export const ComponentArt: React.FC<ComponentArtProps> = ({
               fontWeight={800}
               fill={closed ? '#1B7F4B' : '#67737E'}
             >
-              {closed ? 'ON' : 'OFF'}
+              {closed ? t(lang, 'switchOn') : t(lang, 'switchOff')}
             </text>
           )}
         </g>
@@ -424,7 +427,7 @@ export const ComponentArt: React.FC<ComponentArtProps> = ({
               fontWeight={800}
               fill={pressed ? '#C73126' : '#67737E'}
             >
-              {pressed ? 'HELD' : 'HOLD'}
+              {pressed ? t(lang, 'btnHeld') : t(lang, 'btnHold')}
             </text>
           )}
         </g>

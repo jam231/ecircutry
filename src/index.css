@@ -233,6 +233,107 @@ body,
   border-color: rgba(32, 36, 40, 0.25);
 }
 
+.icon-btn.active-voice {
+  background: var(--accent-teal-soft);
+  color: #13695e;
+  border-color: rgba(28, 138, 124, 0.3);
+}
+
+/* Compact EN / PL Language Pill Switcher */
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  height: 36px;
+  box-shadow: var(--shadow-soft);
+  flex-shrink: 0;
+}
+
+.lang-btn {
+  border: none;
+  background: transparent;
+  color: var(--ink-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 7px;
+  height: 30px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.lang-btn.active {
+  background: var(--ink-primary);
+  color: #ffffff;
+}
+
+/* On-demand Audio Narration Speaker Buttons */
+.mission-speak-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-muted);
+  color: var(--ink-primary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.16s ease;
+}
+
+.mission-speak-btn:hover {
+  background: #e2dcd0;
+  transform: scale(1.05);
+}
+
+.mission-speak-btn.kid-speak {
+  width: 38px;
+  height: 38px;
+  background: var(--accent-teal);
+  color: #ffffff;
+  border-color: transparent;
+  box-shadow: 0 4px 12px rgba(28, 138, 124, 0.28);
+}
+
+.mission-speak-btn.speaking {
+  background: var(--accent-copper);
+  color: #ffffff;
+  border-color: transparent;
+  animation: gentlePulse 1.3s ease-in-out infinite;
+}
+
+.speak-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-muted);
+  color: var(--ink-primary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.speak-pill-btn:hover {
+  background: #e2dcd0;
+}
+
+.speak-pill-btn.speaking {
+  background: var(--accent-copper);
+  color: #ffffff;
+  border-color: transparent;
+}
+
 .icon-btn.btn-why {
   background: #fff5ec;
   color: var(--accent-copper);
@@ -1160,9 +1261,28 @@ body,
 }
 
 /* Responsive Mobile Tweaks */
-@media (max-width: 640px) {
+@media (max-width: 720px) {
   .top-bar {
     padding: 8px 10px 6px;
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .brand-group {
+    flex: 1 1 100%;
+    justify-content: space-between;
+  }
+
+  .top-actions {
+    width: 100%;
+    justify-content: space-between;
+    gap: 5px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .top-actions::-webkit-scrollbar {
+    display: none;
   }
 
   .brand-sub {
@@ -1171,6 +1291,25 @@ body,
 
   .brand-logo {
     padding: 5px 8px 5px 6px;
+  }
+
+  .mode-btn {
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+
+  .icon-btn {
+    height: 34px;
+    min-width: 34px;
+    padding: 0 8px;
+  }
+
+  .lang-switch {
+    height: 34px;
+  }
+
+  .lang-btn {
+    height: 28px;
   }
 
   .icon-btn .btn-text {

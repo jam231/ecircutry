@@ -1,9 +1,11 @@
 import React from 'react';
+import { type Language, pickText, t } from '../core/i18n';
 import type { AppMode, LevelDefinition } from '../engine/types';
 import { stemRegistry } from '../core/stemModule';
 
 interface LevelModalProps {
   mode: AppMode;
+  lang: Language;
   currentLevelId: string;
   levels: LevelDefinition[];
   sandbox: LevelDefinition;
@@ -14,6 +16,7 @@ interface LevelModalProps {
 
 export const LevelModal: React.FC<LevelModalProps> = ({
   mode,
+  lang,
   currentLevelId,
   levels,
   sandbox,
@@ -24,11 +27,11 @@ export const LevelModal: React.FC<LevelModalProps> = ({
   const modules = stemRegistry.list();
 
   return (
-    <div className="sheet-backdrop centered" onClick={onClose} role="dialog" aria-modal="true" aria-label="Select level">
+    <div className="sheet-backdrop centered" onClick={onClose} role="dialog" aria-modal="true" aria-label={mode === 'kid' ? t(lang, 'kidMissionsHeader') : t(lang, 'adultCampaignHeader')}>
       <div className="sheet-panel" onClick={(e) => e.stopPropagation()}>
         <div className="sheet-header">
           <h2 className="sheet-title">
-            {mode === 'kid' ? 'Little Inventor Missions' : 'Practical DC Lab — Campaign'}
+            {mode === 'kid' ? t(lang, 'kidMissionsHeader') : t(lang, 'adultCampaignHeader')}
           </h2>
           <button type="button" className="close-btn" onClick={onClose} aria-label="Close">
             ×
@@ -51,14 +54,16 @@ export const LevelModal: React.FC<LevelModalProps> = ({
               >
                 <div className="level-tile-top">
                   <span className="level-num">
-                    {mode === 'kid' ? `M${lvl.order}` : `LAB ${String(lvl.order).padStart(2, '0')}`}
+                    {mode === 'kid'
+                      ? `${t(lang, 'missionPrefix')}${lvl.order}`
+                      : `${t(lang, 'labPrefix')} ${String(lvl.order).padStart(2, '0')}`}
                   </span>
-                  <span className="star-row" aria-label={`${stars} of 3 stars`}>
+                  <span className="star-row" aria-label={`${stars} / 3`}>
                     {stars > 0 ? '★'.repeat(stars) + '☆'.repeat(3 - stars) : '☆☆☆'}
                   </span>
                 </div>
-                <div className="level-tile-title">{lvl.title}</div>
-                <div className="level-tile-tag">{lvl.conceptTag}</div>
+                <div className="level-tile-title">{pickText(lvl.title, lang)}</div>
+                <div className="level-tile-tag">{pickText(lvl.conceptTag, lang)}</div>
               </button>
             );
           })}
@@ -73,23 +78,23 @@ export const LevelModal: React.FC<LevelModalProps> = ({
             }}
           >
             <div className="level-tile-top">
-              <span className="level-num">SANDBOX</span>
+              <span className="level-num">{t(lang, 'sandboxBadge')}</span>
               <span className="star-row">∞</span>
             </div>
-            <div className="level-tile-title">{sandbox.title}</div>
-            <div className="level-tile-tag">{sandbox.conceptTag}</div>
+            <div className="level-tile-title">{pickText(sandbox.title, lang)}</div>
+            <div className="level-tile-tag">{pickText(sandbox.conceptTag, lang)}</div>
           </button>
         </div>
 
         {/* Modular STEM Platform Strip */}
         <div className="module-roadmap">
           <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-tertiary)' }}>
-            STEM Modules:
+            {t(lang, 'stemModulesLabel')}
           </span>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {modules.map((m) => (
               <span key={m.id} className={`module-chip ${m.status === 'active' ? 'active' : ''}`}>
-                {m.name} {m.status === 'coming-soon' ? '• Next' : ''}
+                {pickText(m.name, lang)} {m.status === 'coming-soon' ? t(lang, 'nextBadge') : ''}
               </span>
             ))}
           </div>

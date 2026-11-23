@@ -1,4 +1,5 @@
 import React from 'react';
+import { type Language, t } from '../core/i18n';
 import { type CircuitBoardState, type SimulationResult, coordKey } from '../engine/types';
 import { formatCurrent, formatOhms, formatPower, formatVoltage } from '../engine/resistorColors';
 import type { ProbeTarget } from './BreadboardView';
@@ -7,29 +8,30 @@ interface MultimeterHudProps {
   board: CircuitBoardState;
   sim: SimulationResult;
   probeTarget: ProbeTarget | null;
+  lang: Language;
   onClose: () => void;
 }
 
-function getComponentLabel(kind: string): string {
+function getComponentLabel(kind: string, lang: Language): string {
   switch (kind) {
     case 'battery':
-      return 'Battery';
+      return t(lang, 'compBattery');
     case 'resistor':
-      return 'Resistor';
+      return t(lang, 'compResistor');
     case 'rheostat':
-      return 'Dimmer';
+      return t(lang, 'compDimmer');
     case 'led':
-      return 'LED';
+      return t(lang, 'compLed');
     case 'switch_toggle':
-      return 'Toggle Switch';
+      return t(lang, 'compToggleSw');
     case 'switch_push':
-      return 'Push Button';
+      return t(lang, 'compPushBtn');
     case 'motor':
-      return 'DC Motor';
+      return t(lang, 'compMotor');
     case 'buzzer':
-      return 'Piezo Buzzer';
+      return t(lang, 'compBuzzer');
     default:
-      return 'Part';
+      return lang === 'pl' ? 'Element' : 'Part';
   }
 }
 
@@ -37,61 +39,67 @@ export const MultimeterHud: React.FC<MultimeterHudProps> = ({
   board,
   sim,
   probeTarget,
+  lang,
   onClose,
 }) => {
-  let title = 'Tap any part or socket';
+  let title = t(lang, 'meterTapPrompt');
   let primary = '0.00 V';
   let vText = '—';
   let iText = '—';
   let pText = '—';
   let rText = '—';
-  let status = 'Ready to measure live DC values.';
+  let status = t(lang, 'meterReady');
 
   if (probeTarget?.kind === 'component') {
     const comp = board.components.find((c) => c.id === probeTarget.id);
-    const t = sim.componentStates[probeTarget.id];
-    if (comp && t) {
-      title = getComponentLabel(comp.kind);
-      primary = comp.kind === 'led' || comp.kind === 'resistor' || comp.kind === 'rheostat'
-        ? formatCurrent(t.current)
-        : formatVoltage(Math.abs(t.voltageDrop));
-      vText = formatVoltage(Math.abs(t.voltageDrop));
-      iText = formatCurrent(t.current);
-      pText = formatPower(t.power);
-      rText = t.effectiveResistance > 1e6 ? 'OPEN' : formatOhms(t.effectiveResistance);
-      status = t.statusText;
+    const telem = sim.componentStates[probeTarget.id];
+    if (comp && telem) {
+      title = getComponentLabel(comp.kind, lang);
+      primary =
+        comp.kind === 'led' || comp.kind === 'resistor' || comp.kind === 'rheostat'
+          ? formatCurrent(telem.current)
+          : formatVoltage(Math.abs(telem.voltageDrop));
+      vText = formatVoltage(Math.abs(telem.voltageDrop));
+      iText = formatCurrent(telem.current);
+      pText = formatPower(telem.power);
+      rText = telem.effectiveResistance > 1e6 ? t(lang, 'meterOpen') : formatOhms(telem.effectiveResistance);
+      status = telem.statusText;
     }
   } else if (probeTarget?.kind === 'wire') {
     const w = sim.wireStates[probeTarget.id];
     if (w) {
-      title = 'Jumper Wire';
+      title = t(lang, 'jumperWire');
       primary = formatCurrent(w.current);
       iText = formatCurrent(w.current);
       vText = '~0.00 V';
       rText = '0.02Ω';
       pText = formatPower(w.current * w.current * 0.02);
-      status = w.overloaded ? 'OVERLOAD! Short circuit current.' : Math.abs(w.current) > 0.0005 ? 'Carrying current' : 'No current flowing';
+      status = w.overloaded
+        ? t(lang, 'meterWireOverload')
+        : Math.abs(w.current) > 0.0005
+        ? t(lang, 'meterWireFlow')
+        : t(lang, 'meterWireIdle');
     }
   } else if (probeTarget?.kind === 'node') {
     const key = coordKey(probeTarget.coord);
     const v = sim.nodeVoltages[key];
     const colChar = String.fromCharCode(65 + probeTarget.coord.col);
-    title = `Socket ${colChar}${probeTarget.coord.row + 1}`;
+    title = `${t(lang, 'meterSocket')} ${colChar}${probeTarget.coord.row + 1}`;
     if (v !== undefined) {
       primary = formatVoltage(v);
       vText = formatVoltage(v);
-      status = 'Voltage relative to Battery − (GND)';
+      status = t(lang, 'meterGroundRef');
     } else {
-      primary = 'FLOAT';
-      status = 'Unconnected socket';
+      primary = '---';
+      status = t(lang, 'meterFloat');
     }
   }
 
   return (
-    <aside className="multimeter-hud" aria-label="Digital Multimeter">
+    <aside className="multimeter-hud" aria-label={t(lang, 'meterHeader')}>
       <div className="meter-header">
-        <span>DC Multimeter</span>
-        <button type="button" className="meter-close" onClick={onClose} aria-label="Close multimeter">
+        <span>{t(lang, 'meterHeader')}</span>
+        <button type="button" className="meter-close" onClick={onClose} aria-label="Close">
           ×
         </button>
       </div>
@@ -99,7 +107,7 @@ export const MultimeterHud: React.FC<MultimeterHudProps> = ({
         <div className="meter-target">{title}</div>
         <div className="meter-primary">{primary}</div>
         <div className="meter-grid">
-          <span>V: {vText}</span>
+          <span>{lang === 'pl' ? 'U' : 'V'}: {vText}</span>
           <span>I: {iText}</span>
           <span>P: {pText}</span>
           <span>R: {rText}</span>

@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
+import type { Language } from '../core/i18n';
 import {
   type CircuitBoardState,
   type CircuitComponent,
@@ -24,6 +25,7 @@ interface BreadboardViewProps {
   sim: SimulationResult;
   fanAngles: Record<string, number>;
   isKidMode: boolean;
+  lang: Language;
   xrayMode: boolean;
   meterMode: boolean;
   wireColor: WireColor;
@@ -96,6 +98,7 @@ export const BreadboardView: React.FC<BreadboardViewProps> = ({
   sim,
   fanAngles,
   isKidMode,
+  lang,
   xrayMode,
   meterMode,
   wireColor,
@@ -750,6 +753,7 @@ export const BreadboardView: React.FC<BreadboardViewProps> = ({
               length={dist}
               fanAngle={fanAngles[comp.id] ?? 0}
               isKidMode={isKidMode}
+              lang={lang}
               isSelected={isSelected}
             />
 

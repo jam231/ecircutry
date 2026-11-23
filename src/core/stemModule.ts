@@ -1,9 +1,10 @@
+import type { LocalizedText } from './i18n';
 import type { LevelDefinition } from '../engine/types';
 
 export interface StemModuleDescriptor {
   id: string;
-  name: string;
-  tagline: string;
+  name: LocalizedText;
+  tagline: LocalizedText;
   status: 'active' | 'coming-soon';
   accentColor: string;
   adultLevels: LevelDefinition[];

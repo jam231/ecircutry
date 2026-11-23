@@ -150,4 +150,22 @@ describe('solveCircuit (Real DC MNA Physics Engine)', () => {
     expect(cw).toBeGreaterThan(0.5);
     expect(ccw).toBeLessThan(-0.5);
   });
+
+  it('produces localized Polish diagnostics when lang is pl', () => {
+    const board: CircuitBoardState = {
+      cols: 4,
+      rows: 3,
+      components: [
+        { id: 'bat', kind: 'battery', voltage: 9, a: { col: 0, row: 0 }, b: { col: 0, row: 1 } },
+        { id: 'led', kind: 'led', ledColor: 'red', a: { col: 1, row: 0 }, b: { col: 1, row: 1 } },
+      ],
+      wires: [
+        { id: 'w1', a: { col: 0, row: 0 }, b: { col: 1, row: 0 }, color: 'red' },
+        { id: 'w2', a: { col: 1, row: 1 }, b: { col: 0, row: 1 }, color: 'black' },
+      ],
+    };
+
+    const resPl = solveCircuit(board, 'pl');
+    expect(resPl.diagnostics[0]?.title).toContain('przeciążona');
+  });
 });

@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type Language, pickText, t } from './core/i18n';
+import { narrator } from './core/narrator';
 import {
   type AppMode,
   type CircuitBoardState,
   type CircuitComponent,
   type GridCoord,
+  type LedColor,
   type LevelDefinition,
   type LevelInteractionHistory,
   type TrayItemTemplate,
@@ -43,11 +46,27 @@ function nextUid(prefix: string): string {
   return `${prefix}-${uidCounter}`;
 }
 
+function getLedColorLabel(color: LedColor | undefined, lang: Language): string {
+  switch (color) {
+    case 'green':
+      return t(lang, 'ledGreen');
+    case 'amber':
+      return t(lang, 'ledAmber');
+    case 'blue':
+      return t(lang, 'ledBlue');
+    default:
+      return t(lang, 'ledRed');
+  }
+}
+
 export function App() {
   const initialProgress = useMemo(() => loadProgress(), []);
   const [mode, setMode] = useState<AppMode>(initialProgress.mode);
+  const [lang, setLang] = useState<Language>(initialProgress.lang);
   const [muted, setMuted] = useState<boolean>(initialProgress.muted);
+  const [voiceEnabled, setVoiceEnabled] = useState<boolean>(initialProgress.voiceEnabled);
   const [completed, setCompleted] = useState<Record<string, number>>(initialProgress.completed);
+  const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
 
   const activeLevels = mode === 'kid' ? KID_MISSIONS : ADULT_LEVELS;
   const activeSandbox = mode === 'kid' ? KID_SANDBOX : ADULT_SANDBOX;
@@ -58,7 +77,6 @@ export function App() {
   const [board, setBoard] = useState<CircuitBoardState>(() =>
     createInitialBoard(initialProgress.mode === 'kid' ? KID_MISSIONS[0] : ADULT_LEVELS[0])
   );
-  // Track which tray template produced each user-placed component id so limits stay exact
   const [componentTemplateMap, setComponentTemplateMap] = useState<Record<string, string>>({});
   const [history, setHistory] = useState<LevelInteractionHistory>({ flags: {}, burnoutCount: 0 });
 
@@ -74,28 +92,49 @@ export function App() {
   const [victoryDismissed, setVictoryDismissed] = useState<boolean>(false);
   const [earnedStars, setEarnedStars] = useState<number>(3);
 
-  // Smooth spinning animation angles for active DC motors
   const [fanAngles, setFanAngles] = useState<Record<string, number>>({});
   const solvedForLevelRef = useRef<string | null>(null);
   const shortSoundCooldownRef = useRef<number>(0);
 
-  // Sync mute & persistence
+  // Subscribe to narrator speaking state
+  useEffect(() => narrator.subscribe(setIsSpeaking), []);
+
+  // Sync mute, voice, language, html[lang], and persistence
   useEffect(() => {
     soundEngine.setMuted(muted);
-    saveProgress({ mode, muted, completed });
-  }, [mode, muted, completed]);
+    narrator.setMuted(muted);
+    narrator.setEnabled(voiceEnabled);
+    if (typeof document !== 'undefined') {
+      document.documentElement.lang = lang;
+    }
+    saveProgress({ mode, lang, muted, voiceEnabled, completed });
+  }, [mode, lang, muted, voiceEnabled, completed]);
 
-  const loadLevel = useCallback((nextLvl: LevelDefinition) => {
-    setLevel(nextLvl);
-    setBoard(createInitialBoard(nextLvl));
-    setComponentTemplateMap({});
-    setHistory({ flags: {}, burnoutCount: 0 });
-    setSelectedTemplate(null);
-    setSelectedItem(null);
-    setProbeTarget(null);
-    setVictoryDismissed(false);
-    solvedForLevelRef.current = null;
-  }, []);
+  const loadLevel = useCallback(
+    (nextLvl: LevelDefinition, options: { speakPrompt?: boolean; overrideLang?: Language; overrideMode?: AppMode } = {}) => {
+      narrator.stop();
+      setLevel(nextLvl);
+      setBoard(createInitialBoard(nextLvl));
+      setComponentTemplateMap({});
+      setHistory({ flags: {}, burnoutCount: 0 });
+      setSelectedTemplate(null);
+      setSelectedItem(null);
+      setProbeTarget(null);
+      setVictoryDismissed(false);
+      solvedForLevelRef.current = null;
+
+      const effMode = options.overrideMode ?? nextLvl.mode;
+      const effLang = options.overrideLang ?? lang;
+      if (options.speakPrompt ?? effMode === 'kid') {
+        narrator.speak(pickText(nextLvl.narrationPrompt, effLang), effLang, {
+          isKidMode: effMode === 'kid',
+          dedupeKey: `intro-${nextLvl.id}-${effLang}`,
+          cooldownMs: 1200,
+        });
+      }
+    },
+    [lang]
+  );
 
   const switchMode = (nextMode: AppMode) => {
     if (nextMode === mode) return;
@@ -105,26 +144,45 @@ export function App() {
       setMeterMode(false);
       setProbeTarget(null);
     }
-    loadLevel(nextList[0]);
+    loadLevel(nextList[0], {
+      speakPrompt: nextMode === 'kid',
+      overrideMode: nextMode,
+    });
   };
 
-  // Real-time MNA DC circuit solve
-  const sim = useMemo(() => solveCircuit(board), [board]);
+  const switchLanguage = (nextLang: Language) => {
+    if (nextLang === lang) return;
+    narrator.stop();
+    setLang(nextLang);
+    if (mode === 'kid') {
+      narrator.speak(pickText(level.narrationPrompt, nextLang), nextLang, {
+        isKidMode: true,
+        dedupeKey: `lang-switch-${level.id}-${nextLang}`,
+        cooldownMs: 500,
+      });
+    }
+  };
 
-  // Evaluate level goals
-  const evaluation = useMemo(() => level.evaluate(board, sim, history), [level, board, sim, history]);
+  // Real-time MNA DC circuit solve (with localized diagnostics)
+  const sim = useMemo(() => solveCircuit(board, lang), [board, lang]);
 
-  // Continuous voltage-reactive Web Audio (motor whirr + piezo buzzer)
+  // Evaluate level goals (with localized goal labels)
+  const evaluation = useMemo(
+    () => level.evaluate(board, sim, history, lang),
+    [level, board, sim, history, lang]
+  );
+
+  // Continuous voltage-reactive Web Audio + friendly short/reverse voice hints in Kid Mode
   useEffect(() => {
     let maxMotor = 0;
     let maxBuzzer = 0;
     for (const comp of board.components) {
-      const t = sim.componentStates[comp.id];
-      if (!t || !t.active || comp.burnedOut) continue;
+      const telem = sim.componentStates[comp.id];
+      if (!telem || !telem.active || comp.burnedOut) continue;
       if (comp.kind === 'motor') {
-        maxMotor = Math.max(maxMotor, Math.abs(t.motorSpeed));
+        maxMotor = Math.max(maxMotor, Math.abs(telem.motorSpeed));
       } else if (comp.kind === 'buzzer') {
-        maxBuzzer = Math.max(maxBuzzer, t.intensity);
+        maxBuzzer = Math.max(maxBuzzer, telem.intensity);
       }
     }
     soundEngine.updateContinuousLoads(maxMotor, maxBuzzer);
@@ -134,14 +192,36 @@ export function App() {
       if (now - shortSoundCooldownRef.current > 1200) {
         shortSoundCooldownRef.current = now;
         soundEngine.playShortSpark();
+        if (mode === 'kid') {
+          narrator.speak(t(lang, 'speakKidShort'), lang, {
+            isKidMode: true,
+            dedupeKey: `kid-short-${lang}`,
+            cooldownMs: 4500,
+          });
+        }
+      }
+    } else if (mode === 'kid') {
+      const revDiag = sim.diagnostics.find((d) => d.id.startsWith('led-rev-'));
+      if (revDiag) {
+        narrator.speak(t(lang, 'speakKidReverse'), lang, {
+          isKidMode: true,
+          dedupeKey: `kid-rev-${revDiag.id}-${lang}`,
+          cooldownMs: 5000,
+        });
       }
     }
-  }, [board.components, sim]);
+  }, [board.components, sim, mode, lang]);
 
-  // Clean up continuous audio on unmount
-  useEffect(() => () => soundEngine.silenceContinuousLoads(), []);
+  // Clean up audio & speech on unmount
+  useEffect(
+    () => () => {
+      soundEngine.silenceContinuousLoads();
+      narrator.stop();
+    },
+    []
+  );
 
-  // Thermal burnout timer: overloaded LED flashes bright then pops cleanly after 450ms
+  // Thermal burnout timer: overloaded LED flashes bright then pops cleanly after 440ms
   useEffect(() => {
     const overloadedLedIds = board.components
       .filter((c) => c.kind === 'led' && !c.burnedOut && sim.componentStates[c.id]?.overloaded)
@@ -158,10 +238,30 @@ export function App() {
           overloadedLedIds.includes(c.id) ? { ...c, burnedOut: true } : c
         ),
       }));
+
+      // Gentle voice feedback right after the pop sound
+      window.setTimeout(() => {
+        if (mode === 'kid') {
+          narrator.speak(t(lang, 'speakKidBurnout'), lang, {
+            isKidMode: true,
+            dedupeKey: `kid-pop-${lang}`,
+            cooldownMs: 4000,
+          });
+        } else {
+          const ledDiag = sim.diagnostics.find((d) => d.id.startsWith('led-over-'));
+          if (ledDiag) {
+            narrator.speak(`${ledDiag.title} ${ledDiag.tip ?? ledDiag.summary}`, lang, {
+              isKidMode: false,
+              dedupeKey: `adult-pop-${lang}`,
+              cooldownMs: 5000,
+            });
+          }
+        }
+      }, 260);
     }, 440);
 
     return () => window.clearTimeout(timer);
-  }, [board.components, sim.componentStates, mode]);
+  }, [board.components, sim.componentStates, sim.diagnostics, mode, lang]);
 
   // Smooth 60fps fan blade rotation only while a motor is actively energized
   useEffect(() => {
@@ -191,7 +291,7 @@ export function App() {
     return () => cancelAnimationFrame(rafId);
   }, [board.components, sim.componentStates]);
 
-  // Celebrate puzzle solve & save star rating
+  // Celebrate puzzle solve, save star rating, and narrate victory takeaway
   useEffect(() => {
     if (level.isSandbox || !evaluation.solved) return;
     if (solvedForLevelRef.current === level.id) return;
@@ -215,7 +315,19 @@ export function App() {
       ...prev,
       [level.id]: Math.max(prev[level.id] ?? 0, stars),
     }));
-  }, [evaluation.solved, level, board.components.length, board.wires.length, history.burnoutCount, mode]);
+
+    const prefix = mode === 'kid' ? t(lang, 'speakKidVictoryPrefix') : t(lang, 'speakAdultVictoryPrefix');
+    const explanation = pickText(level.lesson.explanation, lang);
+    const speakTimer = window.setTimeout(() => {
+      narrator.speak(`${prefix} ${explanation}`, lang, {
+        isKidMode: mode === 'kid',
+        dedupeKey: `win-${level.id}-${lang}`,
+        cooldownMs: 3000,
+      });
+    }, 520);
+
+    return () => window.clearTimeout(speakTimer);
+  }, [evaluation.solved, level, board.components.length, board.wires.length, history.burnoutCount, mode, lang]);
 
   // Count used tray items
   const usedCounts = useMemo(() => {
@@ -227,7 +339,6 @@ export function App() {
     return counts;
   }, [board.components, componentTemplateMap]);
 
-  // Helper: in Kid Mode, editing the board gently heals any popped LEDs so kids never get stuck
   const maybeHealKids = useCallback(
     (comps: CircuitComponent[]): CircuitComponent[] =>
       mode === 'kid' ? comps.map((c) => (c.burnedOut ? { ...c, burnedOut: false } : c)) : comps,
@@ -278,7 +389,6 @@ export function App() {
         components: [...maybeHealKids(prev.components), newComp],
       }));
       setSelectedItem({ kind: 'component', id });
-      // Auto-return to wire tool if that part's inventory ran out
       if (template.limit !== null && used + 1 >= template.limit) {
         setSelectedTemplate(null);
       }
@@ -321,7 +431,6 @@ export function App() {
     const comp = board.components.find((c) => c.id === id);
     if (!comp || comp.locked) return;
     const isHoriz = comp.a.row === comp.b.row;
-    // Try rotating 90 degrees around terminal A
     const candidates: GridCoord[] = isHoriz
       ? [
           { col: comp.a.col, row: comp.a.row + 1 },
@@ -398,6 +507,14 @@ export function App() {
     setProbeTarget(target);
   };
 
+  const handleSpeakManual = (text: string) => {
+    if (muted) {
+      setMuted(false);
+    }
+    narrator.setMuted(false);
+    narrator.speak(text, lang, { isKidMode: mode === 'kid', manual: true });
+  };
+
   const selectedComp =
     selectedItem?.kind === 'component'
       ? board.components.find((c) => c.id === selectedItem.id) ?? null
@@ -424,7 +541,7 @@ export function App() {
             type="button"
             className="brand-logo"
             onClick={() => setShowLevels(true)}
-            aria-label="Open level selector"
+            aria-label={mode === 'kid' ? t(lang, 'kidMissionsHeader') : t(lang, 'adultCampaignHeader')}
           >
             <span className="brand-mark" aria-hidden="true">
               <svg width="20" height="20" viewBox="0 0 64 64">
@@ -439,7 +556,7 @@ export function App() {
             </span>
             <span>
               <h1 className="brand-title">ecircutry</h1>
-              <span className="brand-sub">DC Electronics Lab</span>
+              <span className="brand-sub">{t(lang, 'brandSub')}</span>
             </span>
           </button>
 
@@ -451,7 +568,7 @@ export function App() {
               className={`mode-btn ${mode === 'adult' ? 'active' : ''}`}
               onClick={() => switchMode('adult')}
             >
-              <span>Adult Lab</span>
+              <span>{t(lang, 'modeAdult')}</span>
             </button>
             <button
               type="button"
@@ -460,12 +577,32 @@ export function App() {
               className={`mode-btn ${mode === 'kid' ? 'active kid-active' : ''}`}
               onClick={() => switchMode('kid')}
             >
-              <span>Kid Mode</span>
+              <span>{t(lang, 'modeKid')}</span>
             </button>
           </div>
         </div>
 
         <div className="top-actions">
+          {/* Compact EN / PL Language Switcher */}
+          <div className="lang-switch" role="group" aria-label="Language">
+            <button
+              type="button"
+              className={`lang-btn ${lang === 'en' ? 'active' : ''}`}
+              onClick={() => switchLanguage('en')}
+              aria-pressed={lang === 'en'}
+            >
+              EN
+            </button>
+            <button
+              type="button"
+              className={`lang-btn ${lang === 'pl' ? 'active' : ''}`}
+              onClick={() => switchLanguage('pl')}
+              aria-pressed={lang === 'pl'}
+            >
+              PL
+            </button>
+          </div>
+
           {/* X-Ray Current Flow Overlay Toggle */}
           <button
             type="button"
@@ -474,12 +611,12 @@ export function App() {
               soundEngine.playSwitchClick(!xrayMode);
               setXrayMode((v) => !v);
             }}
-            title="Toggle X-Ray live current flow & node voltages"
+            title={t(lang, 'xrayTitle')}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
               <path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z" />
             </svg>
-            <span className="btn-text">X-Ray</span>
+            <span className="btn-text">{t(lang, 'xray')}</span>
           </button>
 
           {/* Multimeter Probe Toggle (Adult Mode) */}
@@ -495,14 +632,14 @@ export function App() {
                   return next;
                 });
               }}
-              title="Tap any part or socket to measure Voltage, Current & Power"
+              title={t(lang, 'meterTitle')}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
                 <rect x="4" y="3" width="16" height="18" rx="3" />
                 <path d="M8 7h8v4H8z" />
                 <circle cx="12" cy="15.5" r="2" />
               </svg>
-              <span className="btn-text">Meter</span>
+              <span className="btn-text">{t(lang, 'meter')}</span>
             </button>
           )}
 
@@ -512,9 +649,35 @@ export function App() {
               type="button"
               className={`icon-btn btn-why ${topDiagnostic?.severity === 'danger' ? 'pulse-alert' : ''}`}
               onClick={() => setShowMath(true)}
-              title="See live Ohm's Law math and diagnosis"
+              title={t(lang, 'whyTitle')}
             >
-              <span className="btn-text">Why?</span>
+              <span className="btn-text">{t(lang, 'why')}</span>
+            </button>
+          )}
+
+          {/* Voice Narration Toggle */}
+          {narrator.isSupported() && (
+            <button
+              type="button"
+              className={`icon-btn ${voiceEnabled && !muted ? 'active-voice' : ''}`}
+              onClick={() => {
+                const next = !voiceEnabled;
+                setVoiceEnabled(next);
+                if (!next) {
+                  narrator.stop();
+                } else if (muted) {
+                  setMuted(false);
+                }
+              }}
+              title={voiceEnabled ? t(lang, 'voiceOnTitle') : t(lang, 'voiceOffTitle')}
+              aria-label={voiceEnabled ? t(lang, 'voiceOnTitle') : t(lang, 'voiceOffTitle')}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="23" />
+                {(!voiceEnabled || muted) && <line x1="3" y1="3" x2="21" y2="21" />}
+              </svg>
             </button>
           )}
 
@@ -524,10 +687,10 @@ export function App() {
             className="icon-btn"
             onClick={() => {
               soundEngine.playUnplug();
-              loadLevel(level);
+              loadLevel(level, { speakPrompt: false });
             }}
-            title="Reset breadboard"
-            aria-label="Reset breadboard"
+            title={t(lang, 'resetTitle')}
+            aria-label={t(lang, 'resetTitle')}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
@@ -540,8 +703,8 @@ export function App() {
             type="button"
             className="icon-btn"
             onClick={() => setMuted((m) => !m)}
-            title={muted ? 'Unmute sound effects' : 'Mute sound effects'}
-            aria-label={muted ? 'Unmute sound effects' : 'Mute sound effects'}
+            title={muted ? t(lang, 'unmuteTitle') : t(lang, 'muteTitle')}
+            aria-label={muted ? t(lang, 'unmuteTitle') : t(lang, 'muteTitle')}
           >
             {muted ? (
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
@@ -561,29 +724,57 @@ export function App() {
       </header>
 
       {/* Level Info & Goal Strip */}
-      <section className="mission-strip" aria-label="Current mission">
+      <section className="mission-strip" aria-label={pickText(level.title, lang)}>
         <div className="mission-meta">
           <button
             type="button"
             className="level-picker-trigger"
             onClick={() => setShowLevels(true)}
-            title="Switch puzzle or open sandbox"
           >
             <span>
               {level.isSandbox
-                ? 'SANDBOX'
+                ? t(lang, 'sandboxBadge')
                 : mode === 'kid'
-                ? `M${level.order}`
-                : `LAB ${String(level.order).padStart(2, '0')}`}
+                ? `${t(lang, 'missionPrefix')}${level.order}`
+                : `${t(lang, 'labPrefix')} ${String(level.order).padStart(2, '0')}`}
             </span>
             <span aria-hidden="true">▾</span>
           </button>
 
+          {/* On-demand Read Aloud button (especially big & joyful in Kid Mode!) */}
+          {narrator.isSupported() && (
+            <button
+              type="button"
+              className={`mission-speak-btn ${mode === 'kid' ? 'kid-speak' : ''} ${isSpeaking ? 'speaking' : ''}`}
+              onClick={() =>
+                isSpeaking
+                  ? narrator.stop()
+                  : handleSpeakManual(pickText(level.narrationPrompt, lang))
+              }
+              title={isSpeaking ? t(lang, 'stopSpeaking') : t(lang, 'listen')}
+              aria-label={isSpeaking ? t(lang, 'stopSpeaking') : t(lang, 'listen')}
+            >
+              {isSpeaking ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="6" y="6" width="12" height="12" rx="2.5" />
+                </svg>
+              ) : (
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round">
+                  <path d="M11 5L6 9H2v6h4l5 4V5z" />
+                  <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+                  <path d="M19 5a9.5 9.5 0 0 1 0 14" />
+                </svg>
+              )}
+            </button>
+          )}
+
           <div className="mission-copy">
             <div className="mission-title-row">
-              <h2 className="mission-title">{level.title}</h2>
+              <h2 className="mission-title">{pickText(level.title, lang)}</h2>
             </div>
-            {mode === 'adult' && <p className="mission-subtitle">{level.subtitle}</p>}
+            {mode === 'adult' && (
+              <p className="mission-subtitle">{pickText(level.subtitle, lang)}</p>
+            )}
           </div>
         </div>
 
@@ -615,21 +806,20 @@ export function App() {
 
       {/* Interactive Realistic Breadboard Stage */}
       <main className="stage-container">
-        {/* Live Diagnosis Toast when an error occurs */}
         {topDiagnostic && (topDiagnostic.severity === 'danger' || topDiagnostic.severity === 'warn') && (
           <div className={`status-banner ${topDiagnostic.severity}`} role="status">
             <span>
               {mode === 'kid'
                 ? hasBurnedLed
-                  ? 'Poof! Too much power! Add a Helper piece!'
+                  ? t(lang, 'kidPoofBanner')
                   : topDiagnostic.severity === 'danger'
-                  ? 'Oops! Sparks! Try moving a wire.'
-                  : 'Flip the light around!'
+                  ? t(lang, 'kidShortBanner')
+                  : t(lang, 'kidReverseBanner')
                 : topDiagnostic.title}
             </span>
             {hasBurnedLed && (
               <button type="button" className="status-banner-action" onClick={handleHealAll}>
-                {mode === 'kid' ? 'Fix Light ✨' : 'Replace LED'}
+                {mode === 'kid' ? t(lang, 'kidFixLight') : t(lang, 'adultReplaceLed')}
               </button>
             )}
             {mode === 'adult' && (
@@ -638,7 +828,7 @@ export function App() {
                 className="status-banner-action"
                 onClick={() => setShowMath(true)}
               >
-                Why?
+                {t(lang, 'why')}
               </button>
             )}
           </div>
@@ -650,6 +840,7 @@ export function App() {
             sim={sim}
             fanAngles={fanAngles}
             isKidMode={mode === 'kid'}
+            lang={lang}
             xrayMode={xrayMode}
             meterMode={meterMode}
             wireColor={wireColor}
@@ -672,6 +863,7 @@ export function App() {
             board={board}
             sim={sim}
             probeTarget={probeTarget}
+            lang={lang}
             onClose={() => {
               setMeterMode(false);
               setProbeTarget(null);
@@ -683,34 +875,35 @@ export function App() {
         {!meterMode && (selectedComp || selectedWire) && (
           <div className="inspector-pill" role="toolbar" aria-label="Selected item controls">
             {selectedComp && (() => {
-              const t = sim.componentStates[selectedComp.id];
+              const telem = sim.componentStates[selectedComp.id];
               return (
                 <>
                   <span className="inspector-label">
                     {selectedComp.kind === 'rheostat'
-                      ? `Dimmer (${formatOhms(selectedComp.resistance ?? 330)})`
+                      ? `${t(lang, 'compDimmer')} (${formatOhms(selectedComp.resistance ?? 330)})`
                       : selectedComp.kind === 'resistor'
-                      ? `Resistor (${formatOhms(selectedComp.resistance ?? 220)})`
+                      ? mode === 'kid'
+                        ? t(lang, 'compHelper')
+                        : `${t(lang, 'compResistor')} (${formatOhms(selectedComp.resistance ?? 220)})`
                       : selectedComp.kind === 'battery'
-                      ? `${selectedComp.voltage ?? 3}V Battery`
+                      ? `${t(lang, 'compBattery')} ${selectedComp.voltage ?? 3}V`
                       : selectedComp.kind === 'led'
-                      ? `${(selectedComp.ledColor ?? 'red').toUpperCase()} LED`
+                      ? `${getLedColorLabel(selectedComp.ledColor, lang)} LED`
                       : selectedComp.kind === 'motor'
-                      ? 'DC Fan'
+                      ? t(lang, 'compMotor')
                       : selectedComp.kind === 'buzzer'
-                      ? 'Piezo Buzzer'
+                      ? t(lang, 'compBuzzer')
                       : selectedComp.kind === 'switch_push'
-                      ? 'Push Button'
-                      : 'Toggle Switch'}
+                      ? t(lang, 'compPushBtn')
+                      : t(lang, 'compToggleSw')}
                   </span>
 
-                  {mode === 'adult' && t && (
+                  {mode === 'adult' && telem && (
                     <span className="inspector-readout">
-                      {formatVoltage(Math.abs(t.voltageDrop))} • {formatCurrent(t.current)}
+                      {formatVoltage(Math.abs(telem.voltageDrop))} • {formatCurrent(telem.current)}
                     </span>
                   )}
 
-                  {/* Live Resistance Slider for Rheostat / Dimmer */}
                   {selectedComp.kind === 'rheostat' && (
                     <label className="rheostat-slider-wrap">
                       <input
@@ -733,7 +926,7 @@ export function App() {
                       className="inspector-btn heal"
                       onClick={() => handleHealComponent(selectedComp.id)}
                     >
-                      {mode === 'kid' ? 'Fix ✨' : 'Replace'}
+                      {mode === 'kid' ? t(lang, 'kidFixBtn') : t(lang, 'adultReplaceBtn')}
                     </button>
                   )}
 
@@ -745,7 +938,7 @@ export function App() {
                       className="inspector-btn"
                       onClick={() => handleFlipComponent(selectedComp.id)}
                     >
-                      ⇄ Flip +/−
+                      {t(lang, 'flipPolarity')}
                     </button>
                   )}
 
@@ -755,7 +948,7 @@ export function App() {
                       className="inspector-btn"
                       onClick={() => handleRotateComponent(selectedComp.id)}
                     >
-                      ↻ Rotate
+                      {t(lang, 'rotatePart')}
                     </button>
                   )}
 
@@ -765,7 +958,7 @@ export function App() {
                       className="inspector-btn danger"
                       onClick={handleDeleteSelected}
                     >
-                      Remove
+                      {t(lang, 'removePart')}
                     </button>
                   )}
                 </>
@@ -774,7 +967,7 @@ export function App() {
 
             {selectedWire && (
               <>
-                <span className="inspector-label">Jumper Wire</span>
+                <span className="inspector-label">{t(lang, 'jumperWire')}</span>
                 {mode === 'adult' && sim.wireStates[selectedWire.id] && (
                   <span className="inspector-readout">
                     {formatCurrent(sim.wireStates[selectedWire.id].current)}
@@ -786,7 +979,7 @@ export function App() {
                     className="inspector-btn danger"
                     onClick={handleDeleteSelected}
                   >
-                    Remove Wire
+                    {t(lang, 'removeWire')}
                   </button>
                 )}
               </>
@@ -802,6 +995,7 @@ export function App() {
         selectedTemplateId={selectedTemplate?.templateId ?? null}
         wireColor={wireColor}
         isKidMode={mode === 'kid'}
+        lang={lang}
         onSelectTemplate={(tpl) => {
           setSelectedTemplate(tpl);
           setSelectedItem(null);
@@ -811,54 +1005,96 @@ export function App() {
       />
 
       {/* Why? (Show Math) Drawer */}
-      {showMath && <MathDrawer level={level} sim={sim} onClose={() => setShowMath(false)} />}
+      {showMath && (
+        <MathDrawer
+          level={level}
+          sim={sim}
+          lang={lang}
+          isSpeaking={isSpeaking}
+          onSpeakText={handleSpeakManual}
+          onStopSpeaking={() => narrator.stop()}
+          onClose={() => {
+            narrator.stop();
+            setShowMath(false);
+          }}
+        />
+      )}
 
       {/* Level / Mission Picker Modal */}
       {showLevels && (
         <LevelModal
           mode={mode}
+          lang={lang}
           currentLevelId={level.id}
           levels={activeLevels}
           sandbox={activeSandbox}
           completed={completed}
-          onSelectLevel={loadLevel}
+          onSelectLevel={(lvl) => loadLevel(lvl)}
           onClose={() => setShowLevels(false)}
         />
       )}
 
       {/* Victory Celebration Modal */}
       {!level.isSandbox && evaluation.solved && !victoryDismissed && (
-        <div className="sheet-backdrop centered" role="dialog" aria-modal="true" aria-label="Level complete">
+        <div className="sheet-backdrop centered" role="dialog" aria-modal="true" aria-label={t(lang, 'victoryKidTitle')}>
           <div className="sheet-panel victory-panel">
-            <div className="victory-stars" aria-label={`${earnedStars} stars`}>
+            <div className="victory-stars" aria-label={`${earnedStars} / 3`}>
               {'★'.repeat(earnedStars)}
               {'☆'.repeat(3 - earnedStars)}
             </div>
             <h2 className="sheet-title" style={{ fontSize: 22, marginBottom: 6 }}>
-              {mode === 'kid' ? 'Awesome Invention!' : `${level.title} — Solved!`}
+              {mode === 'kid'
+                ? t(lang, 'victoryKidTitle')
+                : `${pickText(level.title, lang)} — ${t(lang, 'victoryAdultSuffix')}`}
             </h2>
             <p className="formula-body" style={{ marginBottom: 12 }}>
-              {level.lesson.explanation}
+              {pickText(level.lesson.explanation, lang)}
             </p>
             {mode === 'adult' && (
               <div className="formula-box" style={{ textAlign: 'center' }}>
-                {level.lesson.formula}
+                {pickText(level.lesson.formula, lang)}
+              </div>
+            )}
+            {narrator.isSupported() && (
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 8 }}>
+                <button
+                  type="button"
+                  className={`speak-pill-btn ${isSpeaking ? 'speaking' : ''}`}
+                  onClick={() =>
+                    isSpeaking
+                      ? narrator.stop()
+                      : handleSpeakManual(pickText(level.lesson.explanation, lang))
+                  }
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round">
+                    <path d="M11 5L6 9H2v6h4l5 4V5z" />
+                    <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+                  </svg>
+                  <span>{isSpeaking ? t(lang, 'stopSpeaking') : t(lang, 'listen')}</span>
+                </button>
               </div>
             )}
             <div className="victory-actions">
               <button
                 type="button"
                 className="secondary-cta"
-                onClick={() => setVictoryDismissed(true)}
+                onClick={() => {
+                  narrator.stop();
+                  setVictoryDismissed(true);
+                }}
               >
-                Keep Tinkering
+                {t(lang, 'keepTinkering')}
               </button>
               <button
                 type="button"
                 className="primary-cta"
                 onClick={() => loadLevel(nextLevel)}
               >
-                {nextLevel.isSandbox ? 'Open Free Sandbox →' : mode === 'kid' ? 'Next Mission →' : 'Next Lab →'}
+                {nextLevel.isSandbox
+                  ? t(lang, 'openSandbox')
+                  : mode === 'kid'
+                  ? t(lang, 'nextMission')
+                  : t(lang, 'nextLab')}
               </button>
             </div>
           </div>

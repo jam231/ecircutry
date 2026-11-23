@@ -113,11 +113,13 @@ export interface SimulationResult {
   diagnostics: DiagnosticInsight[];
 }
 
+import type { Language, LocalizedText } from '../core/i18n';
+
 export interface TrayItemTemplate {
   templateId: string;
   kind: ComponentKind;
-  name: string;
-  shortLabel: string;
+  name: LocalizedText;
+  shortLabel: LocalizedText;
   voltage?: number;
   resistance?: number;
   rheostatMin?: number;
@@ -141,9 +143,11 @@ export interface LevelDefinition {
   id: string;
   mode: AppMode;
   order: number;
-  title: string;
-  subtitle: string;
-  conceptTag: string;
+  title: LocalizedText;
+  subtitle: LocalizedText;
+  conceptTag: LocalizedText;
+  /** Spoken voice prompt when narrating this mission/lab */
+  narrationPrompt: LocalizedText;
   isSandbox?: boolean;
   cols: number;
   rows: number;
@@ -152,17 +156,18 @@ export interface LevelDefinition {
   tray: TrayItemTemplate[];
   /** Optional guided wire hint for first-time kids/learners */
   guideWire?: { a: GridCoord; b: GridCoord }[];
-  /** Bite-sized adult concept card for the "Why? (Show Math)" drawer */
+  /** Bite-sized adult/kid concept card for the "Why? (Show Math)" drawer & victory narration */
   lesson: {
-    principle: string;
-    formula: string;
-    explanation: string;
+    principle: LocalizedText;
+    formula: LocalizedText;
+    explanation: LocalizedText;
   };
   /** Dynamic goal evaluator returning visual checklist + solved flag */
   evaluate: (
     board: CircuitBoardState,
     sim: SimulationResult,
-    history: LevelInteractionHistory
+    history: LevelInteractionHistory,
+    lang?: Language
   ) => {
     goals: GoalCheckItem[];
     solved: boolean;

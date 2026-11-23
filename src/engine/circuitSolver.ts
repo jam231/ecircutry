@@ -1,3 +1,4 @@
+import type { Language } from '../core/i18n';
 import {
   type CircuitBoardState,
   type ComponentTelemetry,
@@ -12,12 +13,36 @@ import { formatCurrent, formatOhms, formatVoltage } from './resistorColors';
 /** Realistic forward voltages (Vf) for standard 5mm LEDs */
 export const LED_SPECS: Record<
   LedColor,
-  { vf: number; maxCurrent: number; optimalCurrent: number; dynamicR: number; label: string }
+  { vf: number; maxCurrent: number; optimalCurrent: number; dynamicR: number; label: Record<Language, string> }
 > = {
-  red: { vf: 2.0, maxCurrent: 0.035, optimalCurrent: 0.02, dynamicR: 15, label: 'Red LED' },
-  amber: { vf: 2.1, maxCurrent: 0.035, optimalCurrent: 0.02, dynamicR: 15, label: 'Amber LED' },
-  green: { vf: 2.2, maxCurrent: 0.035, optimalCurrent: 0.02, dynamicR: 16, label: 'Green LED' },
-  blue: { vf: 3.0, maxCurrent: 0.035, optimalCurrent: 0.02, dynamicR: 18, label: 'Blue LED' },
+  red: {
+    vf: 2.0,
+    maxCurrent: 0.035,
+    optimalCurrent: 0.02,
+    dynamicR: 15,
+    label: { en: 'Red LED', pl: 'Czerwona dioda LED' },
+  },
+  amber: {
+    vf: 2.1,
+    maxCurrent: 0.035,
+    optimalCurrent: 0.02,
+    dynamicR: 15,
+    label: { en: 'Amber LED', pl: 'Żółta dioda LED' },
+  },
+  green: {
+    vf: 2.2,
+    maxCurrent: 0.035,
+    optimalCurrent: 0.02,
+    dynamicR: 16,
+    label: { en: 'Green LED', pl: 'Zielona dioda LED' },
+  },
+  blue: {
+    vf: 3.0,
+    maxCurrent: 0.035,
+    optimalCurrent: 0.02,
+    dynamicR: 18,
+    label: { en: 'Blue LED', pl: 'Niebieska dioda LED' },
+  },
 };
 
 const WIRE_RESISTANCE = 0.02; // Ohms — small enough for real accuracy, gives exact per-wire KCL current
@@ -46,7 +71,6 @@ function solveLinearSystem(A: Float64Array[], b: Float64Array): Float64Array {
   const rhs = Float64Array.from(b);
 
   for (let col = 0; col < n; col++) {
-    // Partial pivoting
     let pivotRow = col;
     let maxAbs = Math.abs(M[col][col]);
     for (let r = col + 1; r < n; r++) {
@@ -97,9 +121,10 @@ function solveLinearSystem(A: Float64Array[], b: Float64Array): Float64Array {
 /**
  * Real DC Nodal Analysis solver with iterative piecewise-linear LED convergence.
  * Computes node voltages, signed per-component and per-wire currents, power,
- * burnout/short states, and educational diagnostics with plugged-in live math.
+ * burnout/short states, and localized educational diagnostics with plugged-in live math.
  */
-export function solveCircuit(board: CircuitBoardState): SimulationResult {
+export function solveCircuit(board: CircuitBoardState, lang: Language = 'en'): SimulationResult {
+  const isPl = lang === 'pl';
   const nodeIndex = new Map<string, number>();
   const indexToKey: string[] = [];
 
@@ -133,15 +158,12 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
     };
   }
 
-  // Pick negative terminal of first battery as 0V reference (ground), else node 0
   const firstBattery = board.components.find((c) => c.kind === 'battery' && !c.burnedOut);
   const groundIdx = firstBattery ? registerNode(coordKey(firstBattery.b)) : 0;
 
-  // Iterative state for nonlinear LEDs (conducting vs cutoff)
   const ledConducting = new Map<string, boolean>();
   for (const comp of board.components) {
     if (comp.kind === 'led' && !comp.burnedOut) {
-      // Optimistically start conducting so forward-biased paths settle smoothly
       ledConducting.set(comp.id, true);
     }
   }
@@ -153,7 +175,6 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
     const G: Float64Array[] = Array.from({ length: nodeCount }, () => new Float64Array(nodeCount));
     const I = new Float64Array(nodeCount);
 
-    // Tiny bleed conductance to ground keeps disconnected islands well-conditioned
     for (let i = 0; i < nodeCount; i++) {
       G[i][i] += BLEED_CONDUCTANCE;
     }
@@ -177,7 +198,6 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
       I[nNeg] -= iEq;
     };
 
-    // Stamp wires
     for (const wire of board.wires) {
       const n1 = nodeIndex.get(coordKey(wire.a))!;
       const n2 = nodeIndex.get(coordKey(wire.b))!;
@@ -186,7 +206,6 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
       }
     }
 
-    // Stamp components
     for (const comp of board.components) {
       const nA = nodeIndex.get(coordKey(comp.a))!;
       const nB = nodeIndex.get(coordKey(comp.b))!;
@@ -225,8 +244,6 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
         case 'led': {
           const spec = LED_SPECS[comp.ledColor ?? 'red'];
           if (ledConducting.get(comp.id)) {
-            // Conducting piecewise-linear diode: voltage drop Vf + dynamicR
-            // Equivalent to voltage source opposing forward current: + at anode, - at cathode
             stampNortonSource(nA, nB, spec.vf, spec.dynamicR);
           } else {
             stampResistor(nA, nB, DIODE_OFF_RESISTANCE);
@@ -236,7 +253,6 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
       }
     }
 
-    // Pin ground node to 0V strongly
     for (let c = 0; c < nodeCount; c++) {
       G[groundIdx][c] = 0;
     }
@@ -245,7 +261,6 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
 
     voltages = solveLinearSystem(G, I);
 
-    // Check diode state consistency
     let changed = false;
     for (const comp of board.components) {
       if (comp.kind !== 'led' || comp.burnedOut) continue;
@@ -272,13 +287,11 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
     if (!changed) break;
   }
 
-  // Build readable node voltages
   const nodeVoltages: Record<string, number> = {};
   for (let i = 0; i < nodeCount; i++) {
     nodeVoltages[indexToKey[i]] = Math.abs(voltages[i]) < 1e-5 ? 0 : voltages[i];
   }
 
-  // Compute per-component telemetry
   const componentStates: Record<string, ComponentTelemetry> = {};
   const wireStates: Record<string, WireTelemetry> = {};
   const diagnostics: DiagnosticInsight[] = [];
@@ -298,20 +311,15 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
     let reverseBiased = false;
     let shorted = false;
     let effectiveResistance = OPEN_RESISTANCE;
-    let statusText = 'Idle';
+    let statusText = isPl ? 'Spoczynek' : 'Idle';
 
     if (comp.burnedOut) {
-      statusText = 'Burned out!';
+      statusText = isPl ? 'Spalona!' : 'Burned out!';
     } else {
       switch (comp.kind) {
         case 'battery': {
           const vNom = comp.voltage ?? 3;
           const rInt = getBatteryInternalResistance(vNom);
-          // Positive current leaves + terminal (nA), so inside battery flows b -> a;
-          // we report signed current from a -> b (so discharging battery has current < 0 internally,
-          // wait: for intuitive wire/component flow, battery pushes current OUT of + (a),
-          // so let's store current leaving + terminal as negative a->b, or positive b->a:
-          // Actually: I_a_to_b = (Va - Vb - Vnom) / rInt -> negative when discharging (flows b->a inside battery!)
           current = (vDrop - vNom) / rInt;
           const draw = Math.abs(current);
           effectiveResistance = rInt;
@@ -321,11 +329,15 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
             shorted = true;
             overloaded = true;
             shortCircuit = true;
-            statusText = `Short circuit! (${formatCurrent(draw)})`;
+            statusText = isPl
+              ? `Zwarcie! (${formatCurrent(draw)})`
+              : `Short circuit! (${formatCurrent(draw)})`;
           } else if (active) {
-            statusText = `Supplying ${formatCurrent(draw)}`;
+            statusText = isPl
+              ? `Zasila ${formatCurrent(draw)}`
+              : `Supplying ${formatCurrent(draw)}`;
           } else {
-            statusText = `${vNom}V Ready`;
+            statusText = isPl ? `${vNom}V Gotowa` : `${vNom}V Ready`;
           }
           break;
         }
@@ -338,7 +350,9 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
           active = Math.abs(current) > 0.0005;
           if (p > 0.6) {
             overloaded = true;
-            statusText = `Overheating! (${(p * 1000).toFixed(0)}mW)`;
+            statusText = isPl
+              ? `Przegrzewa się! (${(p * 1000).toFixed(0)}mW)`
+              : `Overheating! (${(p * 1000).toFixed(0)}mW)`;
           } else if (active) {
             statusText = `${formatOhms(r)} • ${formatCurrent(current)}`;
           } else {
@@ -351,7 +365,13 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
           effectiveResistance = comp.closed ? 0.05 : OPEN_RESISTANCE;
           current = vDrop / effectiveResistance;
           active = Boolean(comp.closed);
-          statusText = comp.closed ? 'Closed (ON)' : 'Open (OFF)';
+          statusText = comp.closed
+            ? isPl
+              ? 'Zamknięty (WŁ)'
+              : 'Closed (ON)'
+            : isPl
+            ? 'Otwarty (WYŁ)'
+            : 'Open (OFF)';
           break;
         }
         case 'led': {
@@ -367,23 +387,31 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
 
           if (vDrop < -0.5) {
             reverseBiased = true;
-            statusText = 'Backwards (reverse-biased)';
+            statusText = isPl ? 'Odwrotnie (polaryzacja zaporowa)' : 'Backwards (reverse-biased)';
           } else if (current > spec.maxCurrent) {
             overloaded = true;
             active = true;
             intensity = 1.4;
-            statusText = `Too much current! (${formatCurrent(current)})`;
+            statusText = isPl
+              ? `Za duży prąd! (${formatCurrent(current)})`
+              : `Too much current! (${formatCurrent(current)})`;
           } else if (current >= 0.0015) {
             active = true;
             intensity = Math.min(1, Math.pow(current / spec.optimalCurrent, 0.72));
             statusText =
               current < 0.006
-                ? `Dim (${formatCurrent(current)})`
+                ? isPl
+                  ? `Słabo świeci (${formatCurrent(current)})`
+                  : `Dim (${formatCurrent(current)})`
+                : isPl
+                ? `Świeci (${formatCurrent(current)})`
                 : `Glowing (${formatCurrent(current)})`;
           } else if (vDrop > 0.4 && vDrop < spec.vf) {
-            statusText = `Needs ${spec.vf.toFixed(1)}V (has ${vDrop.toFixed(1)}V)`;
+            statusText = isPl
+              ? `Wymaga ${spec.vf.toFixed(1)}V (ma ${vDrop.toFixed(1)}V)`
+              : `Needs ${spec.vf.toFixed(1)}V (has ${vDrop.toFixed(1)}V)`;
           } else {
-            statusText = 'Off';
+            statusText = isPl ? 'Wyłączona' : 'Off';
           }
           break;
         }
@@ -398,12 +426,23 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
             intensity = Math.min(1, absV / 6);
             if (absV > MOTOR_MAX_VOLTAGE) {
               overloaded = true;
-              statusText = `Over-speed! (${formatVoltage(absV)})`;
+              statusText = isPl
+                ? `Za wysokie obroty! (${formatVoltage(absV)})`
+                : `Over-speed! (${formatVoltage(absV)})`;
             } else {
-              statusText = `${dir > 0 ? 'Spinning CW' : 'Spinning CCW'} (${formatVoltage(absV)})`;
+              statusText = isPl
+                ? `${dir > 0 ? 'Kręci się w prawo' : 'Kręci się w lewo'} (${formatVoltage(absV)})`
+                : `${dir > 0 ? 'Spinning CW' : 'Spinning CCW'} (${formatVoltage(absV)})`;
             }
           } else {
-            statusText = absV > 0.2 ? 'Too weak to spin' : 'Stopped';
+            statusText =
+              absV > 0.2
+                ? isPl
+                  ? 'Za słaby prąd do rozruchu'
+                  : 'Too weak to spin'
+                : isPl
+                ? 'Zatrzymany'
+                : 'Stopped';
           }
           break;
         }
@@ -414,9 +453,18 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
           if (absV >= BUZZER_MIN_VOLTAGE) {
             active = true;
             intensity = Math.min(1, (absV - 1.2) / 5.5);
-            statusText = `Buzzing (${formatVoltage(absV)})`;
+            statusText = isPl
+              ? `Brzęczy (${formatVoltage(absV)})`
+              : `Buzzing (${formatVoltage(absV)})`;
           } else {
-            statusText = absV > 0.2 ? 'Too quiet (< 1.8V)' : 'Silent';
+            statusText =
+              absV > 0.2
+                ? isPl
+                  ? 'Za cicho (< 1,8V)'
+                  : 'Too quiet (< 1.8V)'
+                : isPl
+                ? 'Cisza'
+                : 'Silent';
           }
           break;
         }
@@ -453,7 +501,6 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
     };
   }
 
-  // Generate helpful educational diagnostics with real plugged-in numbers
   const sourceBattery = board.components.find((c) => c.kind === 'battery' && !c.burnedOut);
   const vs = sourceBattery?.voltage ?? 3;
 
@@ -461,13 +508,18 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
     diagnostics.push({
       id: 'short-circuit',
       severity: 'danger',
-      title: 'Short Circuit Detected!',
-      summary:
-        'Current is racing straight from + to − with almost zero resistance, overheating the battery and wires.',
-      formulaLabel: "Ohm's Law (Short Circuit)",
+      title: isPl ? 'Wykryto zwarcie!' : 'Short Circuit Detected!',
+      summary: isPl
+        ? 'Prąd płynie prosto z + do − z niemal zerowym oporem, przegrzewając baterię i przewody.'
+        : 'Current is racing straight from + to − with almost zero resistance, overheating the battery and wires.',
+      formulaLabel: isPl ? 'Prawo Ohma (Zwarcie)' : "Ohm's Law (Short Circuit)",
       formulaEquation: 'I = V / R',
-      formulaPluggedIn: `I ≈ ${vs.toFixed(1)}V / ~1Ω = ${vs.toFixed(1)}A (Dangerously high!)`,
-      tip: 'Put a resistor or load (like a motor or resistor + LED) in the loop so current has work to do.',
+      formulaPluggedIn: isPl
+        ? `I ≈ ${vs.toFixed(1)}V / ~1Ω = ${vs.toFixed(1)}A (Niebezpiecznie dużo!)`
+        : `I ≈ ${vs.toFixed(1)}V / ~1Ω = ${vs.toFixed(1)}A (Dangerously high!)`,
+      tip: isPl
+        ? 'Wstaw w obwód odbiornik lub rezystor (np. silnik albo rezystor z diodą LED), aby prąd miał co zasilać.'
+        : 'Put a resistor or load (like a motor or resistor + LED) in the loop so current has work to do.',
     });
   }
 
@@ -477,45 +529,69 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
 
     if (comp.kind === 'led') {
       const spec = LED_SPECS[comp.ledColor ?? 'red'];
+      const ledName = spec.label[lang];
       if (comp.burnedOut || t.overloaded) {
-        const targetI = 0.02; // 20mA sweet spot
+        const targetI = 0.02;
         const recommendedR = Math.max(47, Math.ceil((vs - spec.vf) / targetI / 10) * 10);
         diagnostics.push({
           id: `led-over-${comp.id}`,
           severity: 'danger',
-          title: comp.burnedOut ? `${spec.label} Popped!` : `${spec.label} Overloaded!`,
+          title: comp.burnedOut
+            ? isPl
+              ? `${ledName} spalona!`
+              : `${ledName} Popped!`
+            : isPl
+            ? `${ledName} przeciążona!`
+            : `${ledName} Overloaded!`,
           summary: comp.burnedOut
-            ? `Too much current rushed through the LED (max is 35 mA). Add a resistor in series to tame it.`
+            ? isPl
+              ? 'Przez diodę popłynął zbyt duży prąd (bezpieczny limit to 35 mA). Dodaj rezystor szeregowo, by go ograniczyć.'
+              : 'Too much current rushed through the LED (max is 35 mA). Add a resistor in series to tame it.'
+            : isPl
+            ? `Natężenie wynosi ${formatCurrent(t.current)} — znacznie powyżej limitu 35 mA!`
             : `Current is ${formatCurrent(t.current)}, well above the 35 mA safe limit!`,
-          formulaLabel: 'Current-Limiting Resistor',
+          formulaLabel: isPl ? 'Rezystor ograniczający prąd' : 'Current-Limiting Resistor',
           formulaEquation: 'R = (Vs − Vf) / I',
           formulaPluggedIn: `R = (${vs.toFixed(1)}V − ${spec.vf.toFixed(1)}V) / 0.020A = ${recommendedR}Ω`,
-          tip: `Try a resistor around ${recommendedR}Ω in series with this LED, then tap Reset / Replace.`,
+          tip: isPl
+            ? `Użyj rezystora około ${recommendedR}Ω szeregowo z tą diodą, a potem kliknij Wymień LED.`
+            : `Try a resistor around ${recommendedR}Ω in series with this LED, then tap Replace LED.`,
           componentId: comp.id,
         });
       } else if (t.reverseBiased) {
         diagnostics.push({
           id: `led-rev-${comp.id}`,
           severity: 'warn',
-          title: `${spec.label} is Backwards`,
-          summary:
-            'LEDs are one-way valves (diodes). Current only flows from + (anode) to − (cathode, flat side).',
-          formulaLabel: 'Diode Polarity',
+          title: isPl ? `${ledName} podłączona odwrotnie` : `${ledName} is Backwards`,
+          summary: isPl
+            ? 'Diody LED działają jak zawór jednokierunkowy. Prąd płynie tylko od + (anody) do − (katody ze ściętą krawędzią).'
+            : 'LEDs are one-way valves (diodes). Current only flows from + (anode) to − (cathode, flat side).',
+          formulaLabel: isPl ? 'Polaryzacja diody' : 'Diode Polarity',
           formulaEquation: 'Va − Vc ≥ Vf',
-          formulaPluggedIn: `Currently ${formatVoltage(t.voltageDrop)} (needs ≥ +${spec.vf.toFixed(1)}V)`,
-          tip: 'Tap the LED and press Flip +/− to reverse its direction.',
+          formulaPluggedIn: isPl
+            ? `Obecnie ${formatVoltage(t.voltageDrop)} (wymaga ≥ +${spec.vf.toFixed(1)}V)`
+            : `Currently ${formatVoltage(t.voltageDrop)} (needs ≥ +${spec.vf.toFixed(1)}V)`,
+          tip: isPl
+            ? 'Dotknij diody i naciśnij „Odwróć +/−”, aby zamienić jej kierunek.'
+            : 'Tap the LED and press Flip +/− to reverse its direction.',
           componentId: comp.id,
         });
       } else if (!t.active && t.voltageDrop > 0.3 && t.voltageDrop < spec.vf) {
         diagnostics.push({
           id: `led-lowv-${comp.id}`,
           severity: 'info',
-          title: `${spec.label} Needs More Voltage`,
-          summary: `Only ${formatVoltage(t.voltageDrop)} is reaching this LED, but a ${spec.label} needs at least ${spec.vf.toFixed(1)}V to light up.`,
-          formulaLabel: 'Forward Voltage Threshold',
+          title: isPl ? `${ledName} potrzebuje wyższego napięcia` : `${ledName} Needs More Voltage`,
+          summary: isPl
+            ? `Do diody dociera tylko ${formatVoltage(t.voltageDrop)}, a ${ledName.toLowerCase()} wymaga minimum ${spec.vf.toFixed(1)}V.`
+            : `Only ${formatVoltage(t.voltageDrop)} is reaching this LED, but a ${ledName} needs at least ${spec.vf.toFixed(1)}V to light up.`,
+          formulaLabel: isPl ? 'Napięcie przewodzenia' : 'Forward Voltage Threshold',
           formulaEquation: 'V_LED ≥ Vf',
-          formulaPluggedIn: `${formatVoltage(t.voltageDrop)} < ${spec.vf.toFixed(1)}V (Hint: Try parallel branches instead of series!)`,
-          tip: 'In series, LEDs share voltage. In parallel, each branch gets the full battery voltage.',
+          formulaPluggedIn: isPl
+            ? `${formatVoltage(t.voltageDrop)} < ${spec.vf.toFixed(1)}V (Wskazówka: spróbuj połączenia równoległego!)`
+            : `${formatVoltage(t.voltageDrop)} < ${spec.vf.toFixed(1)}V (Hint: Try parallel branches instead of series!)`,
+          tip: isPl
+            ? 'W połączeniu szeregowym diody dzielą się napięciem. W równoległym każda gałąź dostaje pełne napięcie baterii.'
+            : 'In series, LEDs share voltage. In parallel, each branch gets the full battery voltage.',
           componentId: comp.id,
         });
       }
@@ -525,12 +601,18 @@ export function solveCircuit(board: CircuitBoardState): SimulationResult {
       diagnostics.push({
         id: `motor-over-${comp.id}`,
         severity: 'warn',
-        title: 'Motor Spinning Too Fast!',
-        summary: `The fan motor is getting ${formatVoltage(Math.abs(t.voltageDrop))} (safe max is 9V).`,
-        formulaLabel: 'Voltage Drop',
+        title: isPl ? 'Silnik kręci się za szybko!' : 'Motor Spinning Too Fast!',
+        summary: isPl
+          ? `Wiatrak dostaje ${formatVoltage(Math.abs(t.voltageDrop))} (bezpieczne maksimum to 9V).`
+          : `The fan motor is getting ${formatVoltage(Math.abs(t.voltageDrop))} (safe max is 9V).`,
+        formulaLabel: isPl ? 'Spadek napięcia' : 'Voltage Drop',
         formulaEquation: 'V_motor = I × R_motor',
-        formulaPluggedIn: `${formatVoltage(Math.abs(t.voltageDrop))} across ${MOTOR_RESISTANCE}Ω`,
-        tip: 'Add a small resistor (e.g. 47Ω) in series with the motor to bring its speed into the safe zone.',
+        formulaPluggedIn: isPl
+          ? `${formatVoltage(Math.abs(t.voltageDrop))} na oporze ${MOTOR_RESISTANCE}Ω`
+          : `${formatVoltage(Math.abs(t.voltageDrop))} across ${MOTOR_RESISTANCE}Ω`,
+        tip: isPl
+          ? 'Dodaj niewielki rezystor (np. 47Ω) szeregowo z silnikiem, aby obniżyć obroty.'
+          : 'Add a small resistor (e.g. 47Ω) in series with the motor to bring its speed into the safe zone.',
         componentId: comp.id,
       });
     }
