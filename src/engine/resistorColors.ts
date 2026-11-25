@@ -60,7 +60,8 @@ export function formatOhms(ohms: number): string {
 
 export function formatCurrent(amps: number): string {
   const abs = Math.abs(amps);
-  if (abs < 0.00005) return '0.0 mA';
+  if (abs < 0.000005) return '0.0 mA';
+  if (abs < 0.0001) return `${(abs * 1_000_000).toFixed(0)} µA`;
   if (abs >= 1) return `${abs.toFixed(2)} A`;
   if (abs >= 0.01) return `${(abs * 1000).toFixed(1)} mA`;
   return `${(abs * 1000).toFixed(2)} mA`;
@@ -76,4 +77,27 @@ export function formatPower(watts: number): string {
   if (abs < 0.0001) return '0 mW';
   if (abs >= 1) return `${abs.toFixed(2)} W`;
   return `${(abs * 1000).toFixed(0)} mW`;
+}
+
+export function formatCapacitance(farads: number): string {
+  if (farads >= 1e-3) return `${(farads * 1e3).toFixed(1).replace(/\.0$/, '')}mF`;
+  if (farads >= 1e-6) return `${Math.round(farads * 1e6)}µF`;
+  return `${Math.round(farads * 1e9)}nF`;
+}
+
+export function formatInductance(henrys: number): string {
+  if (henrys >= 1) return `${henrys.toFixed(2).replace(/\.00$/, '')}H`;
+  if (henrys >= 1e-3) return `${Math.round(henrys * 1e3)}mH`;
+  return `${Math.round(henrys * 1e6)}µH`;
+}
+
+export function formatFrequency(hz: number): string {
+  if (hz >= 1000) return `${(hz / 1000).toFixed(2).replace(/\.00$/, '')}kHz`;
+  if (hz >= 10) return `${Math.round(hz)}Hz`;
+  return `${hz.toFixed(1).replace(/\.0$/, '')}Hz`;
+}
+
+export function formatTimeConstant(sec: number): string {
+  if (sec >= 1) return `${sec.toFixed(2)}s`;
+  return `${Math.round(sec * 1000)}ms`;
 }

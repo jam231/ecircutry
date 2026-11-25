@@ -2,20 +2,37 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type Language, pickText, t } from './core/i18n';
 import { narrator } from './core/narrator';
 import {
+  type AcWaveform,
   type AppMode,
   type CircuitBoardState,
   type CircuitComponent,
+  DEFAULT_ENVIRONMENT,
+  type EnvironmentState,
   type GridCoord,
   type LedColor,
   type LevelDefinition,
   type LevelInteractionHistory,
+  type ScopeSample,
+  type SimulationResult,
   type TrayItemTemplate,
   type WireColor,
+  coordKey,
   coordsEqual,
+  createTransientMemory,
   edgeKey,
+  getComponentOccupiedEdges,
+  isReactiveBoard,
 } from './engine/types';
-import { solveCircuit } from './engine/circuitSolver';
-import { formatCurrent, formatOhms, formatVoltage } from './engine/resistorColors';
+import { solveCircuit, stepTransientCircuit } from './engine/circuitSolver';
+import { runAcFrequencySweep } from './engine/acAnalysis';
+import {
+  formatCapacitance,
+  formatCurrent,
+  formatFrequency,
+  formatInductance,
+  formatOhms,
+  formatVoltage,
+} from './engine/resistorColors';
 import {
   ADULT_LEVELS,
   ADULT_SANDBOX,
@@ -27,6 +44,8 @@ import { loadProgress, saveProgress } from './core/storage';
 import { BreadboardView, type ProbeTarget } from './components/BreadboardView';
 import { PartsTray } from './components/PartsTray';
 import { MultimeterHud } from './components/MultimeterHud';
+import { OscilloscopeHud } from './components/OscilloscopeHud';
+import { EnvironmentControls } from './components/EnvironmentControls';
 import { MathDrawer } from './components/MathDrawer';
 import { LevelModal } from './components/LevelModal';
 import { GoalIcon } from './components/GoalIcon';
@@ -35,8 +54,20 @@ function createInitialBoard(level: LevelDefinition): CircuitBoardState {
   return {
     cols: level.cols,
     rows: level.rows,
-    components: level.initialComponents.map((c) => ({ ...c, a: { ...c.a }, b: { ...c.b } })),
+    components: level.initialComponents.map((c) => ({
+      ...c,
+      a: { ...c.a },
+      b: { ...c.b },
+      ...(c.c ? { c: { ...c.c } } : {}),
+    })),
     wires: level.initialWires.map((w) => ({ ...w, a: { ...w.a }, b: { ...w.b } })),
+  };
+}
+
+function createInitialEnv(level: LevelDefinition): EnvironmentState {
+  return {
+    ...DEFAULT_ENVIRONMENT,
+    ...(level.initialEnvironment ?? {}),
   };
 }
 
@@ -71,16 +102,14 @@ export function App() {
   const activeLevels = mode === 'kid' ? KID_MISSIONS : ADULT_LEVELS;
   const activeSandbox = mode === 'kid' ? KID_SANDBOX : ADULT_SANDBOX;
 
-  const [level, setLevel] = useState<LevelDefinition>(() =>
-    initialProgress.mode === 'kid' ? KID_MISSIONS[0] : ADULT_LEVELS[0]
-  );
-  const [board, setBoard] = useState<CircuitBoardState>(() =>
-    createInitialBoard(initialProgress.mode === 'kid' ? KID_MISSIONS[0] : ADULT_LEVELS[0])
-  );
+  const initialLevel = initialProgress.mode === 'kid' ? KID_MISSIONS[0] : ADULT_LEVELS[0];
+  const [level, setLevel] = useState<LevelDefinition>(() => initialLevel);
+  const [board, setBoard] = useState<CircuitBoardState>(() => createInitialBoard(initialLevel));
+  const [env, setEnv] = useState<EnvironmentState>(() => createInitialEnv(initialLevel));
   const [componentTemplateMap, setComponentTemplateMap] = useState<Record<string, string>>({});
-  const [history, setHistory] = useState<LevelInteractionHistory>({ flags: {}, burnoutCount: 0 });
+  const [history, setHistory] = useState<LevelInteractionHistory>({ flags: {}, metrics: {}, burnoutCount: 0 });
 
-  // UI & tool states
+  // UI & instrument states
   const [wireColor, setWireColor] = useState<WireColor>('red');
   const [selectedTemplate, setSelectedTemplate] = useState<TrayItemTemplate | null>(null);
   const [selectedItem, setSelectedItem] = useState<{ kind: 'component' | 'wire'; id: string } | null>(null);
@@ -92,14 +121,32 @@ export function App() {
   const [victoryDismissed, setVictoryDismissed] = useState<boolean>(false);
   const [earnedStars, setEarnedStars] = useState<number>(3);
 
+  // Dual-Channel Oscilloscope state
+  const [scopeOpen, setScopeOpen] = useState<boolean>(Boolean(initialLevel.defaultScope?.open));
+  const [scopeMode, setScopeMode] = useState<'time' | 'bode'>(initialLevel.defaultScope?.mode ?? 'time');
+  const [scopeCh1, setScopeCh1] = useState<GridCoord | null>(initialLevel.defaultScope?.ch1 ?? { col: 1, row: 1 });
+  const [scopeCh2, setScopeCh2] = useState<GridCoord | null>(initialLevel.defaultScope?.ch2 ?? { col: 4, row: 1 });
+  const [scopeAssignChannel, setScopeAssignChannel] = useState<1 | 2 | null>(null);
+  const [scopePaused, setScopePaused] = useState<boolean>(false);
+  const [scopeTimeScale, setScopeTimeScale] = useState<number>(initialLevel.defaultScope?.timeScale ?? 1);
+  const [scopeSamples, setScopeSamples] = useState<ScopeSample[]>([]);
+
+  // Transient & warm-start simulation memory
+  const transientMemRef = useRef(createTransientMemory());
+  const warmVoltagesRef = useRef<Record<string, number>>({});
+  const [transientSim, setTransientSim] = useState<SimulationResult | null>(null);
+
   const [fanAngles, setFanAngles] = useState<Record<string, number>>({});
   const solvedForLevelRef = useRef<string | null>(null);
   const shortSoundCooldownRef = useRef<number>(0);
 
-  // Subscribe to narrator speaking state
+  const reactive = useMemo(() => isReactiveBoard(board), [board]);
+  const hasLdr = useMemo(() => board.components.some((c) => c.kind === 'ldr'), [board.components]);
+  const hasThermistor = useMemo(() => board.components.some((c) => c.kind === 'thermistor'), [board.components]);
+  const acComponent = useMemo(() => board.components.find((c) => c.kind === 'ac_source') ?? null, [board.components]);
+
   useEffect(() => narrator.subscribe(setIsSpeaking), []);
 
-  // Sync mute, voice, language, html[lang], and persistence
   useEffect(() => {
     soundEngine.setMuted(muted);
     narrator.setMuted(muted);
@@ -113,13 +160,25 @@ export function App() {
   const loadLevel = useCallback(
     (nextLvl: LevelDefinition, options: { speakPrompt?: boolean; overrideLang?: Language; overrideMode?: AppMode } = {}) => {
       narrator.stop();
+      transientMemRef.current = createTransientMemory();
+      warmVoltagesRef.current = {};
+      setTransientSim(null);
+      setScopeSamples([]);
       setLevel(nextLvl);
       setBoard(createInitialBoard(nextLvl));
+      setEnv(createInitialEnv(nextLvl));
       setComponentTemplateMap({});
-      setHistory({ flags: {}, burnoutCount: 0 });
+      setHistory({ flags: {}, metrics: {}, burnoutCount: 0 });
       setSelectedTemplate(null);
       setSelectedItem(null);
       setProbeTarget(null);
+      setScopeAssignChannel(null);
+      setScopePaused(false);
+      setScopeOpen(Boolean(nextLvl.defaultScope?.open));
+      setScopeMode(nextLvl.defaultScope?.mode ?? 'time');
+      setScopeCh1(nextLvl.defaultScope?.ch1 ?? { col: 1, row: 1 });
+      setScopeCh2(nextLvl.defaultScope?.ch2 ?? { col: Math.min(4, nextLvl.cols - 1), row: 1 });
+      setScopeTimeScale(nextLvl.defaultScope?.timeScale ?? 1);
       setVictoryDismissed(false);
       solvedForLevelRef.current = null;
 
@@ -163,16 +222,99 @@ export function App() {
     }
   };
 
-  // Real-time MNA DC circuit solve (with localized diagnostics)
-  const sim = useMemo(() => solveCircuit(board, lang), [board, lang]);
-
-  // Evaluate level goals (with localized goal labels)
-  const evaluation = useMemo(
-    () => level.evaluate(board, sim, history, lang),
-    [level, board, sim, history, lang]
+  // Warm-started static DC solve (preserves SR Latch bistability cleanly outside render!)
+  const [staticSim, setStaticSim] = useState<SimulationResult>(() =>
+    solveCircuit(createInitialBoard(initialLevel), initialProgress.lang, createInitialEnv(initialLevel))
   );
 
-  // Continuous voltage-reactive Web Audio + friendly short/reverse voice hints in Kid Mode
+  useEffect(() => {
+    const res = solveCircuit(board, lang, env, warmVoltagesRef.current);
+    warmVoltagesRef.current = res.nodeVoltages;
+    setStaticSim(res);
+  }, [board, lang, env]);
+
+  // Fixed-timestep Backward-Euler transient loop when capacitors, inductors, or AC sources are present
+  const boardRef = useRef(board);
+  const envRef = useRef(env);
+  const langRef = useRef(lang);
+  const scopeCh1Ref = useRef(scopeCh1);
+  const scopeCh2Ref = useRef(scopeCh2);
+  const scopeTimeScaleRef = useRef(scopeTimeScale);
+
+  useEffect(() => {
+    boardRef.current = board;
+    envRef.current = env;
+    langRef.current = lang;
+    scopeCh1Ref.current = scopeCh1;
+    scopeCh2Ref.current = scopeCh2;
+    scopeTimeScaleRef.current = scopeTimeScale;
+  }, [board, env, lang, scopeCh1, scopeCh2, scopeTimeScale]);
+
+  useEffect(() => {
+    if (!reactive || scopePaused) return;
+
+    let rafId = 0;
+    let lastFrame = performance.now();
+    let lastCommit = 0;
+    const buffer: ScopeSample[] = [];
+
+    const tick = (now: number) => {
+      const realDt = Math.min(0.04, (now - lastFrame) / 1000);
+      lastFrame = now;
+
+      const b = boardRef.current;
+      const scale = scopeTimeScaleRef.current;
+      // Adaptive sub-stepping keeps high-frequency AC and oscillators crystal smooth
+      const ac = b.components.find((c) => c.kind === 'ac_source');
+      const acFreq = ac?.frequency ?? 2;
+      const simDelta = realDt * (acFreq > 30 ? scale * 0.035 : scale);
+      const subSteps = 6;
+      const subDt = Math.max(0.00015, simDelta / subSteps);
+
+      let latest: SimulationResult | null = null;
+      for (let i = 0; i < subSteps; i++) {
+        latest = stepTransientCircuit(b, transientMemRef.current, subDt, langRef.current, envRef.current);
+      }
+
+      if (latest) {
+        const c1 = scopeCh1Ref.current;
+        const c2 = scopeCh2Ref.current;
+        const v1 = c1 ? latest.nodeVoltages[coordKey(c1)] ?? 0 : 0;
+        const v2 = c2 ? latest.nodeVoltages[coordKey(c2)] ?? 0 : 0;
+        buffer.push({ t: transientMemRef.current.time, ch1: v1, ch2: v2 });
+        if (buffer.length > 150) buffer.shift();
+
+        if (now - lastCommit >= 32) {
+          lastCommit = now;
+          setTransientSim(latest);
+          setScopeSamples([...buffer]);
+        }
+      }
+
+      rafId = requestAnimationFrame(tick);
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [reactive, scopePaused]);
+
+  const sim: SimulationResult = reactive && transientSim ? transientSim : staticSim;
+
+  // Instant Complex-MNA Bode sweep when Scope is in BODE mode
+  const bodeResult = useMemo(() => {
+    if (!scopeOpen || scopeMode !== 'bode' || !acComponent) return null;
+    const probeCoord = scopeCh2 ?? scopeCh1;
+    if (!probeCoord) return null;
+    return runAcFrequencySweep(board, probeCoord, env);
+  }, [board, env, scopeOpen, scopeMode, acComponent, scopeCh1, scopeCh2]);
+
+  // Evaluate level goals whenever board topology, environment, or switch states change
+  const evaluation = useMemo(
+    () => level.evaluate(board, staticSim, history, lang, env),
+    [level, board, staticSim, history, lang, env]
+  );
+
+  // Continuous voltage-reactive Web Audio + friendly Kid Mode hints
   useEffect(() => {
     let maxMotor = 0;
     let maxBuzzer = 0;
@@ -212,7 +354,6 @@ export function App() {
     }
   }, [board.components, sim, mode, lang]);
 
-  // Clean up audio & speech on unmount
   useEffect(
     () => () => {
       soundEngine.silenceContinuousLoads();
@@ -221,25 +362,29 @@ export function App() {
     []
   );
 
-  // Thermal burnout timer: overloaded LED flashes bright then pops cleanly after 440ms
+  // Thermal burnout timer for overloaded LEDs and Resistors
   useEffect(() => {
-    const overloadedLedIds = board.components
-      .filter((c) => c.kind === 'led' && !c.burnedOut && sim.componentStates[c.id]?.overloaded)
+    const overloadedIds = board.components
+      .filter(
+        (c) =>
+          (c.kind === 'led' || c.kind === 'resistor') &&
+          !c.burnedOut &&
+          sim.componentStates[c.id]?.overloaded
+      )
       .map((c) => c.id);
 
-    if (overloadedLedIds.length === 0) return;
+    if (overloadedIds.length === 0) return;
 
     const timer = window.setTimeout(() => {
       soundEngine.playLedPop(mode === 'kid');
-      setHistory((prev) => ({ ...prev, burnoutCount: prev.burnoutCount + overloadedLedIds.length }));
+      setHistory((prev) => ({ ...prev, burnoutCount: prev.burnoutCount + overloadedIds.length }));
       setBoard((prev) => ({
         ...prev,
         components: prev.components.map((c) =>
-          overloadedLedIds.includes(c.id) ? { ...c, burnedOut: true } : c
+          overloadedIds.includes(c.id) ? { ...c, burnedOut: true } : c
         ),
       }));
 
-      // Gentle voice feedback right after the pop sound
       window.setTimeout(() => {
         if (mode === 'kid') {
           narrator.speak(t(lang, 'speakKidBurnout'), lang, {
@@ -248,17 +393,17 @@ export function App() {
             cooldownMs: 4000,
           });
         } else {
-          const ledDiag = sim.diagnostics.find((d) => d.id.startsWith('led-over-'));
-          if (ledDiag) {
-            narrator.speak(`${ledDiag.title} ${ledDiag.tip ?? ledDiag.summary}`, lang, {
+          const diag = sim.diagnostics.find((d) => d.id.startsWith('led-over-') || d.id.startsWith('res-over-'));
+          if (diag) {
+            narrator.speak(`${diag.title} ${diag.tip ?? diag.summary}`, lang, {
               isKidMode: false,
-              dedupeKey: `adult-pop-${lang}`,
+              dedupeKey: `adult-pop-${diag.id}-${lang}`,
               cooldownMs: 5000,
             });
           }
         }
       }, 260);
-    }, 440);
+    }, 480);
 
     return () => window.clearTimeout(timer);
   }, [board.components, sim.componentStates, sim.diagnostics, mode, lang]);
@@ -329,7 +474,6 @@ export function App() {
     return () => window.clearTimeout(speakTimer);
   }, [evaluation.solved, level, board.components.length, board.wires.length, history.burnoutCount, mode, lang]);
 
-  // Count used tray items
   const usedCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const comp of board.components) {
@@ -345,7 +489,6 @@ export function App() {
     [mode]
   );
 
-  // Actions
   const handleAddWire = useCallback(
     (a: GridCoord, b: GridCoord) => {
       if (coordsEqual(a, b)) return;
@@ -364,7 +507,7 @@ export function App() {
   );
 
   const handlePlaceComponent = useCallback(
-    (template: TrayItemTemplate, a: GridCoord, b: GridCoord) => {
+    (template: TrayItemTemplate, a: GridCoord, b: GridCoord, c?: GridCoord) => {
       const used = usedCounts[template.templateId] ?? 0;
       if (template.limit !== null && used >= template.limit) return;
 
@@ -374,11 +517,18 @@ export function App() {
         kind: template.kind,
         a,
         b,
+        ...(c ? { c } : {}),
         voltage: template.voltage,
         resistance: template.resistance,
+        maxPower: template.maxPower,
         rheostatMin: template.rheostatMin,
         rheostatMax: template.rheostatMax,
         ledColor: template.ledColor,
+        capacitance: template.capacitance,
+        inductance: template.inductance,
+        waveform: template.waveform,
+        frequency: template.frequency,
+        amplitude: template.amplitude,
         closed: false,
       };
 
@@ -430,6 +580,43 @@ export function App() {
   const handleRotateComponent = (id: string) => {
     const comp = board.components.find((c) => c.id === id);
     if (!comp || comp.locked) return;
+
+    const occupied = new Set<string>();
+    board.components
+      .filter((c) => c.id !== id)
+      .forEach((c) => getComponentOccupiedEdges(c).forEach((ek) => occupied.add(ek)));
+
+    // 3-terminal component rotates cleanly 90° around center pin C
+    if (comp.c) {
+      const mid = comp.c;
+      const isHoriz = comp.a.row === comp.b.row;
+      const nextA = isHoriz ? { col: mid.col, row: mid.row - 1 } : { col: mid.col - 1, row: mid.row };
+      const nextB = isHoriz ? { col: mid.col, row: mid.row + 1 } : { col: mid.col + 1, row: mid.row };
+      const inBounds =
+        nextA.col >= 0 &&
+        nextA.col < board.cols &&
+        nextA.row >= 0 &&
+        nextA.row < board.rows &&
+        nextB.col >= 0 &&
+        nextB.col < board.cols &&
+        nextB.row >= 0 &&
+        nextB.row < board.rows;
+      if (
+        !inBounds ||
+        occupied.has(edgeKey(nextA, mid)) ||
+        occupied.has(edgeKey(mid, nextB))
+      ) {
+        return;
+      }
+      soundEngine.playPinSnap(1.04);
+      setBoard((prev) => ({
+        ...prev,
+        components: prev.components.map((c) => (c.id === id ? { ...c, a: nextA, b: nextB } : c)),
+      }));
+      return;
+    }
+
+    // 2-terminal component rotates 90° around terminal A
     const isHoriz = comp.a.row === comp.b.row;
     const candidates: GridCoord[] = isHoriz
       ? [
@@ -440,8 +627,6 @@ export function App() {
           { col: comp.a.col + 1, row: comp.a.row },
           { col: comp.a.col - 1, row: comp.a.row },
         ];
-
-    const occupied = new Set(board.components.filter((c) => c.id !== id).map((c) => edgeKey(c.a, c.b)));
     const valid = candidates.find(
       (pt) =>
         pt.col >= 0 &&
@@ -474,10 +659,22 @@ export function App() {
     }));
   };
 
+  const handleDischargeCapacitor = (id: string) => {
+    soundEngine.playPinSnap(0.8);
+    transientMemRef.current.capVoltages[id] = 0;
+  };
+
   const handleRheostatChange = (id: string, resistance: number) => {
     setBoard((prev) => ({
       ...prev,
       components: prev.components.map((c) => (c.id === id ? { ...c, resistance } : c)),
+    }));
+  };
+
+  const handleAcUpdate = (id: string, patch: { frequency?: number; waveform?: AcWaveform }) => {
+    setBoard((prev) => ({
+      ...prev,
+      components: prev.components.map((c) => (c.id === id ? { ...c, ...patch } : c)),
     }));
   };
 
@@ -507,10 +704,15 @@ export function App() {
     setProbeTarget(target);
   };
 
+  const handleAssignScopeProbe = (ch: 1 | 2, coord: GridCoord) => {
+    soundEngine.playProbeBeep();
+    if (ch === 1) setScopeCh1(coord);
+    else setScopeCh2(coord);
+    setScopeAssignChannel(null);
+  };
+
   const handleSpeakManual = (text: string) => {
-    if (muted) {
-      setMuted(false);
-    }
+    if (muted) setMuted(false);
     narrator.setMuted(false);
     narrator.speak(text, lang, { isKidMode: mode === 'kid', manual: true });
   };
@@ -525,12 +727,49 @@ export function App() {
       : null;
 
   const topDiagnostic = sim.diagnostics[0] ?? null;
-  const hasBurnedLed = board.components.some((c) => c.burnedOut);
+  const hasBurnedPart = board.components.some((c) => c.burnedOut);
   const currentIndex = activeLevels.findIndex((l) => l.id === level.id);
   const nextLevel =
     currentIndex >= 0 && currentIndex + 1 < activeLevels.length
       ? activeLevels[currentIndex + 1]
       : activeSandbox;
+
+  const getInspectorTitle = (c: CircuitComponent): string => {
+    switch (c.kind) {
+      case 'rheostat':
+        return `${t(lang, 'compDimmer')} (${formatOhms(c.resistance ?? 330)})`;
+      case 'resistor':
+        return mode === 'kid' ? t(lang, 'compHelper') : `${t(lang, 'compResistor')} (${formatOhms(c.resistance ?? 220)})`;
+      case 'battery':
+        return `${t(lang, 'compBattery')} ${c.voltage ?? 3}V`;
+      case 'led':
+        return `${getLedColorLabel(c.ledColor, lang)} LED`;
+      case 'motor':
+        return t(lang, 'compMotor');
+      case 'buzzer':
+        return t(lang, 'compBuzzer');
+      case 'switch_push':
+        return t(lang, 'compPushBtn');
+      case 'switch_toggle':
+        return t(lang, 'compToggleSw');
+      case 'switch_spdt':
+        return t(lang, 'compSpdtSw');
+      case 'ldr':
+        return t(lang, 'compLdr');
+      case 'thermistor':
+        return t(lang, 'compThermistor');
+      case 'diode':
+        return t(lang, 'compDiode');
+      case 'transistor_npn':
+        return t(lang, 'compNpn');
+      case 'capacitor':
+        return `${t(lang, 'compCapacitor')} (${formatCapacitance(c.capacitance ?? 470e-6)})`;
+      case 'inductor':
+        return `${t(lang, 'compInductor')} (${formatInductance(c.inductance ?? 0.2)})`;
+      case 'ac_source':
+        return `${t(lang, 'compAcSource')} (${formatFrequency(c.frequency ?? 50)})`;
+    }
+  };
 
   return (
     <div className={`app-shell ${mode === 'kid' ? 'mode-kid' : 'mode-adult'}`}>
@@ -583,27 +822,17 @@ export function App() {
         </div>
 
         <div className="top-actions">
-          {/* Compact EN / PL Language Switcher */}
+          {/* Compact EN / PL Switcher */}
           <div className="lang-switch" role="group" aria-label="Language">
-            <button
-              type="button"
-              className={`lang-btn ${lang === 'en' ? 'active' : ''}`}
-              onClick={() => switchLanguage('en')}
-              aria-pressed={lang === 'en'}
-            >
+            <button type="button" className={`lang-btn ${lang === 'en' ? 'active' : ''}`} onClick={() => switchLanguage('en')} aria-pressed={lang === 'en'}>
               EN
             </button>
-            <button
-              type="button"
-              className={`lang-btn ${lang === 'pl' ? 'active' : ''}`}
-              onClick={() => switchLanguage('pl')}
-              aria-pressed={lang === 'pl'}
-            >
+            <button type="button" className={`lang-btn ${lang === 'pl' ? 'active' : ''}`} onClick={() => switchLanguage('pl')} aria-pressed={lang === 'pl'}>
               PL
             </button>
           </div>
 
-          {/* X-Ray Current Flow Overlay Toggle */}
+          {/* X-Ray Overlay Toggle */}
           <button
             type="button"
             className={`icon-btn ${xrayMode ? 'active-xray' : ''}`}
@@ -619,6 +848,30 @@ export function App() {
             <span className="btn-text">{t(lang, 'xray')}</span>
           </button>
 
+          {/* Dual-Channel Oscilloscope Toggle */}
+          {(mode === 'adult' || reactive) && (
+            <button
+              type="button"
+              className={`icon-btn ${scopeOpen ? 'active-scope' : ''}`}
+              onClick={() => {
+                soundEngine.playProbeBeep();
+                setScopeOpen((v) => {
+                  const next = !v;
+                  if (next) setMeterMode(false);
+                  else setScopeAssignChannel(null);
+                  return next;
+                });
+              }}
+              title={t(lang, 'scopeTitle')}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                <rect x="2.5" y="4" width="19" height="16" rx="3" />
+                <path d="M5 13c2-5 4-5 6 0s4 5 8-2" />
+              </svg>
+              <span className="btn-text">{t(lang, 'scope')}</span>
+            </button>
+          )}
+
           {/* Multimeter Probe Toggle (Adult Mode) */}
           {mode === 'adult' && (
             <button
@@ -628,7 +881,12 @@ export function App() {
                 soundEngine.playProbeBeep();
                 setMeterMode((v) => {
                   const next = !v;
-                  if (!next) setProbeTarget(null);
+                  if (next) {
+                    setScopeOpen(false);
+                    setScopeAssignChannel(null);
+                  } else {
+                    setProbeTarget(null);
+                  }
                   return next;
                 });
               }}
@@ -663,11 +921,8 @@ export function App() {
               onClick={() => {
                 const next = !voiceEnabled;
                 setVoiceEnabled(next);
-                if (!next) {
-                  narrator.stop();
-                } else if (muted) {
-                  setMuted(false);
-                }
+                if (!next) narrator.stop();
+                else if (muted) setMuted(false);
               }}
               title={voiceEnabled ? t(lang, 'voiceOnTitle') : t(lang, 'voiceOffTitle')}
               aria-label={voiceEnabled ? t(lang, 'voiceOnTitle') : t(lang, 'voiceOffTitle')}
@@ -723,33 +978,26 @@ export function App() {
         </div>
       </header>
 
-      {/* Level Info & Goal Strip */}
+      {/* Mission / Lab Banner */}
       <section className="mission-strip" aria-label={pickText(level.title, lang)}>
         <div className="mission-meta">
-          <button
-            type="button"
-            className="level-picker-trigger"
-            onClick={() => setShowLevels(true)}
-          >
+          <button type="button" className="level-picker-trigger" onClick={() => setShowLevels(true)}>
             <span>
               {level.isSandbox
                 ? t(lang, 'sandboxBadge')
                 : mode === 'kid'
                 ? `${t(lang, 'missionPrefix')}${level.order}`
-                : `${t(lang, 'labPrefix')} ${String(level.order).padStart(2, '0')}`}
+                : `T${level.tier}·${String(level.order).padStart(2, '0')}`}
             </span>
             <span aria-hidden="true">▾</span>
           </button>
 
-          {/* On-demand Read Aloud button (especially big & joyful in Kid Mode!) */}
           {narrator.isSupported() && (
             <button
               type="button"
               className={`mission-speak-btn ${mode === 'kid' ? 'kid-speak' : ''} ${isSpeaking ? 'speaking' : ''}`}
               onClick={() =>
-                isSpeaking
-                  ? narrator.stop()
-                  : handleSpeakManual(pickText(level.narrationPrompt, lang))
+                isSpeaking ? narrator.stop() : handleSpeakManual(pickText(level.narrationPrompt, lang))
               }
               title={isSpeaking ? t(lang, 'stopSpeaking') : t(lang, 'listen')}
               aria-label={isSpeaking ? t(lang, 'stopSpeaking') : t(lang, 'listen')}
@@ -772,26 +1020,17 @@ export function App() {
             <div className="mission-title-row">
               <h2 className="mission-title">{pickText(level.title, lang)}</h2>
             </div>
-            {mode === 'adult' && (
-              <p className="mission-subtitle">{pickText(level.subtitle, lang)}</p>
-            )}
+            {mode === 'adult' && <p className="mission-subtitle">{pickText(level.subtitle, lang)}</p>}
           </div>
         </div>
 
-        {/* Goals: Clean text chips in Adult Mode; Zero-reading giant icon pills in Kid Mode */}
         {evaluation.goals.length > 0 && (
           <div className="goal-list">
             {evaluation.goals.map((g) =>
               mode === 'kid' ? (
-                <div
-                  key={g.id}
-                  className={`kid-goal-pill ${g.satisfied ? 'satisfied' : ''}`}
-                  title={g.label}
-                >
+                <div key={g.id} className={`kid-goal-pill ${g.satisfied ? 'satisfied' : ''}`} title={g.label}>
                   <GoalIcon icon={g.icon} satisfied={g.satisfied} size={24} />
-                  {g.satisfied && (
-                    <span style={{ fontSize: 15, fontWeight: 900, color: '#1B804B' }}>✓</span>
-                  )}
+                  {g.satisfied && <span style={{ fontSize: 15, fontWeight: 900, color: '#1B804B' }}>✓</span>}
                 </div>
               ) : (
                 <div key={g.id} className={`goal-chip ${g.satisfied ? 'satisfied' : ''}`}>
@@ -806,28 +1045,34 @@ export function App() {
 
       {/* Interactive Realistic Breadboard Stage */}
       <main className="stage-container">
+        {/* Contextual Sun/Moon & Cold/Hot sensor sliders */}
+        <EnvironmentControls
+          hasLdr={hasLdr}
+          hasThermistor={hasThermistor}
+          env={env}
+          lang={lang}
+          isKidMode={mode === 'kid'}
+          onChange={setEnv}
+        />
+
         {topDiagnostic && (topDiagnostic.severity === 'danger' || topDiagnostic.severity === 'warn') && (
           <div className={`status-banner ${topDiagnostic.severity}`} role="status">
             <span>
               {mode === 'kid'
-                ? hasBurnedLed
+                ? hasBurnedPart
                   ? t(lang, 'kidPoofBanner')
                   : topDiagnostic.severity === 'danger'
                   ? t(lang, 'kidShortBanner')
                   : t(lang, 'kidReverseBanner')
                 : topDiagnostic.title}
             </span>
-            {hasBurnedLed && (
+            {hasBurnedPart && (
               <button type="button" className="status-banner-action" onClick={handleHealAll}>
                 {mode === 'kid' ? t(lang, 'kidFixLight') : t(lang, 'adultReplaceLed')}
               </button>
             )}
             {mode === 'adult' && (
-              <button
-                type="button"
-                className="status-banner-action"
-                onClick={() => setShowMath(true)}
-              >
+              <button type="button" className="status-banner-action" onClick={() => setShowMath(true)}>
                 {t(lang, 'why')}
               </button>
             )}
@@ -841,8 +1086,13 @@ export function App() {
             fanAngles={fanAngles}
             isKidMode={mode === 'kid'}
             lang={lang}
+            env={env}
             xrayMode={xrayMode}
             meterMode={meterMode}
+            scopeAssignChannel={scopeAssignChannel}
+            scopeCh1={scopeCh1}
+            scopeCh2={scopeCh2}
+            scopeOpen={scopeOpen}
             wireColor={wireColor}
             selectedTemplate={selectedTemplate}
             selectedItem={selectedItem}
@@ -854,6 +1104,7 @@ export function App() {
             onPushButtonChange={handlePushButtonChange}
             onSelectItem={setSelectedItem}
             onProbe={handleProbe}
+            onAssignScopeProbe={handleAssignScopeProbe}
           />
         </div>
 
@@ -871,6 +1122,31 @@ export function App() {
           />
         )}
 
+        {/* Dual-Channel Oscilloscope & Bode Sweep HUD */}
+        {scopeOpen && (
+          <OscilloscopeHud
+            lang={lang}
+            isKidMode={mode === 'kid'}
+            mode={scopeMode}
+            samples={scopeSamples}
+            bode={bodeResult}
+            acFreq={acComponent?.frequency ?? null}
+            paused={scopePaused}
+            timeScale={scopeTimeScale}
+            ch1={scopeCh1}
+            ch2={scopeCh2}
+            activeAssignChannel={scopeAssignChannel}
+            onModeChange={setScopeMode}
+            onTogglePause={() => setScopePaused((p) => !p)}
+            onTimeScaleChange={setScopeTimeScale}
+            onSelectAssignChannel={setScopeAssignChannel}
+            onClose={() => {
+              setScopeOpen(false);
+              setScopeAssignChannel(null);
+            }}
+          />
+        )}
+
         {/* Contextual Floating Action Pill for Selected Component or Wire */}
         {!meterMode && (selectedComp || selectedWire) && (
           <div className="inspector-pill" role="toolbar" aria-label="Selected item controls">
@@ -878,29 +1154,13 @@ export function App() {
               const telem = sim.componentStates[selectedComp.id];
               return (
                 <>
-                  <span className="inspector-label">
-                    {selectedComp.kind === 'rheostat'
-                      ? `${t(lang, 'compDimmer')} (${formatOhms(selectedComp.resistance ?? 330)})`
-                      : selectedComp.kind === 'resistor'
-                      ? mode === 'kid'
-                        ? t(lang, 'compHelper')
-                        : `${t(lang, 'compResistor')} (${formatOhms(selectedComp.resistance ?? 220)})`
-                      : selectedComp.kind === 'battery'
-                      ? `${t(lang, 'compBattery')} ${selectedComp.voltage ?? 3}V`
-                      : selectedComp.kind === 'led'
-                      ? `${getLedColorLabel(selectedComp.ledColor, lang)} LED`
-                      : selectedComp.kind === 'motor'
-                      ? t(lang, 'compMotor')
-                      : selectedComp.kind === 'buzzer'
-                      ? t(lang, 'compBuzzer')
-                      : selectedComp.kind === 'switch_push'
-                      ? t(lang, 'compPushBtn')
-                      : t(lang, 'compToggleSw')}
-                  </span>
+                  <span className="inspector-label">{getInspectorTitle(selectedComp)}</span>
 
                   {mode === 'adult' && telem && (
                     <span className="inspector-readout">
-                      {formatVoltage(Math.abs(telem.voltageDrop))} • {formatCurrent(telem.current)}
+                      {selectedComp.kind === 'transistor_npn'
+                        ? `Ib ${formatCurrent(telem.baseCurrent ?? 0)} • Ic ${formatCurrent(telem.current)}`
+                        : `${formatVoltage(Math.abs(telem.voltageDrop))} • ${formatCurrent(telem.current)}`}
                     </span>
                   )}
 
@@ -913,51 +1173,71 @@ export function App() {
                         max={selectedComp.rheostatMax ?? 1000}
                         step={10}
                         value={selectedComp.resistance ?? 330}
-                        onChange={(e) =>
-                          handleRheostatChange(selectedComp.id, Number(e.target.value))
-                        }
+                        onChange={(e) => handleRheostatChange(selectedComp.id, Number(e.target.value))}
                       />
                     </label>
                   )}
 
+                  {selectedComp.kind === 'ac_source' && (
+                    <div className="ac-inspector-controls">
+                      {(['sine', 'square', 'triangle'] as AcWaveform[]).map((wf) => (
+                        <button
+                          key={wf}
+                          type="button"
+                          className={`inspector-btn ${(selectedComp.waveform ?? 'sine') === wf ? 'active-wf' : ''}`}
+                          onClick={() => handleAcUpdate(selectedComp.id, { waveform: wf })}
+                        >
+                          {wf === 'sine' ? '~' : wf === 'square' ? '⊓' : '△'}
+                        </button>
+                      ))}
+                      <input
+                        className="rheostat-slider"
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={Math.round((Math.log10(Math.max(1, selectedComp.frequency ?? 10)) / 3) * 100)}
+                        onChange={(e) => {
+                          const f = Math.round(Math.pow(10, (Number(e.target.value) / 100) * 3));
+                          handleAcUpdate(selectedComp.id, { frequency: Math.max(1, f) });
+                        }}
+                        title="Frequency (1 Hz – 1 kHz)"
+                      />
+                    </div>
+                  )}
+
+                  {selectedComp.kind === 'capacitor' && (
+                    <button type="button" className="inspector-btn" onClick={() => handleDischargeCapacitor(selectedComp.id)}>
+                      {t(lang, 'dischargeCap')}
+                    </button>
+                  )}
+
                   {selectedComp.burnedOut && (
-                    <button
-                      type="button"
-                      className="inspector-btn heal"
-                      onClick={() => handleHealComponent(selectedComp.id)}
-                    >
+                    <button type="button" className="inspector-btn heal" onClick={() => handleHealComponent(selectedComp.id)}>
                       {mode === 'kid' ? t(lang, 'kidFixBtn') : t(lang, 'adultReplaceBtn')}
                     </button>
                   )}
 
                   {(selectedComp.kind === 'led' ||
+                    selectedComp.kind === 'diode' ||
                     selectedComp.kind === 'battery' ||
-                    selectedComp.kind === 'motor') && (
-                    <button
-                      type="button"
-                      className="inspector-btn"
-                      onClick={() => handleFlipComponent(selectedComp.id)}
-                    >
+                    selectedComp.kind === 'motor' ||
+                    selectedComp.kind === 'capacitor' ||
+                    selectedComp.kind === 'transistor_npn' ||
+                    selectedComp.kind === 'switch_spdt') && (
+                    <button type="button" className="inspector-btn" onClick={() => handleFlipComponent(selectedComp.id)}>
                       {t(lang, 'flipPolarity')}
                     </button>
                   )}
 
                   {!selectedComp.locked && (
-                    <button
-                      type="button"
-                      className="inspector-btn"
-                      onClick={() => handleRotateComponent(selectedComp.id)}
-                    >
+                    <button type="button" className="inspector-btn" onClick={() => handleRotateComponent(selectedComp.id)}>
                       {t(lang, 'rotatePart')}
                     </button>
                   )}
 
                   {!selectedComp.locked && (
-                    <button
-                      type="button"
-                      className="inspector-btn danger"
-                      onClick={handleDeleteSelected}
-                    >
+                    <button type="button" className="inspector-btn danger" onClick={handleDeleteSelected}>
                       {t(lang, 'removePart')}
                     </button>
                   )}
@@ -969,16 +1249,10 @@ export function App() {
               <>
                 <span className="inspector-label">{t(lang, 'jumperWire')}</span>
                 {mode === 'adult' && sim.wireStates[selectedWire.id] && (
-                  <span className="inspector-readout">
-                    {formatCurrent(sim.wireStates[selectedWire.id].current)}
-                  </span>
+                  <span className="inspector-readout">{formatCurrent(sim.wireStates[selectedWire.id].current)}</span>
                 )}
                 {!selectedWire.locked && (
-                  <button
-                    type="button"
-                    className="inspector-btn danger"
-                    onClick={handleDeleteSelected}
-                  >
+                  <button type="button" className="inspector-btn danger" onClick={handleDeleteSelected}>
                     {t(lang, 'removeWire')}
                   </button>
                 )}
@@ -1004,7 +1278,6 @@ export function App() {
         onSelectWireColor={setWireColor}
       />
 
-      {/* Why? (Show Math) Drawer */}
       {showMath && (
         <MathDrawer
           level={level}
@@ -1020,12 +1293,11 @@ export function App() {
         />
       )}
 
-      {/* Level / Mission Picker Modal */}
       {showLevels && (
         <LevelModal
           mode={mode}
           lang={lang}
-          currentLevelId={level.id}
+          currentLevel={level}
           levels={activeLevels}
           sandbox={activeSandbox}
           completed={completed}
@@ -1034,7 +1306,6 @@ export function App() {
         />
       )}
 
-      {/* Victory Celebration Modal */}
       {!level.isSandbox && evaluation.solved && !victoryDismissed && (
         <div className="sheet-backdrop centered" role="dialog" aria-modal="true" aria-label={t(lang, 'victoryKidTitle')}>
           <div className="sheet-panel victory-panel">
@@ -1085,11 +1356,7 @@ export function App() {
               >
                 {t(lang, 'keepTinkering')}
               </button>
-              <button
-                type="button"
-                className="primary-cta"
-                onClick={() => loadLevel(nextLevel)}
-              >
+              <button type="button" className="primary-cta" onClick={() => loadLevel(nextLevel)}>
                 {nextLevel.isSandbox
                   ? t(lang, 'openSandbox')
                   : mode === 'kid'

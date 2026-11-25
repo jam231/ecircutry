@@ -30,9 +30,15 @@ function previewComponent(tItem: TrayItemTemplate): CircuitComponent {
     b: { col: 1, row: 0 },
     voltage: tItem.voltage,
     resistance: tItem.resistance,
+    maxPower: tItem.maxPower,
     rheostatMin: tItem.rheostatMin,
     rheostatMax: tItem.rheostatMax,
     ledColor: tItem.ledColor,
+    capacitance: tItem.capacitance,
+    inductance: tItem.inductance,
+    waveform: tItem.waveform,
+    frequency: tItem.frequency,
+    amplitude: tItem.amplitude,
     closed: false,
   };
 }
@@ -52,7 +58,6 @@ export const PartsTray: React.FC<PartsTrayProps> = ({
   return (
     <footer className="parts-dock" aria-label={lang === 'pl' ? 'Zasobnik części' : 'Circuit parts tray'}>
       <div className="dock-row">
-        {/* Jumper Wire Tool & Color Swatches */}
         <div className="wire-tool-group">
           <button
             type="button"
@@ -85,7 +90,6 @@ export const PartsTray: React.FC<PartsTrayProps> = ({
 
         {tray.length > 0 && <div className="dock-divider" />}
 
-        {/* Available Component Parts */}
         {tray.map((item) => {
           const used = usedCounts[item.templateId] ?? 0;
           const remaining = item.limit === null ? null : Math.max(0, item.limit - used);
@@ -104,7 +108,7 @@ export const PartsTray: React.FC<PartsTrayProps> = ({
               <span className="part-count-badge">
                 {remaining === null ? '∞' : `×${remaining}`}
               </span>
-              <svg width="64" height="34" viewBox="-46 -26 92 52" aria-hidden="true">
+              <svg width="66" height="34" viewBox="-46 -26 92 52" aria-hidden="true">
                 <ComponentSvgDefs />
                 <ComponentArt
                   component={previewComponent(item)}

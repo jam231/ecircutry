@@ -1,12 +1,13 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { type Language, pickText, t } from '../core/i18n';
-import type { AppMode, LevelDefinition } from '../engine/types';
+import type { AppMode, LevelDefinition, TierId } from '../engine/types';
+import { TIER_METADATA } from '../data/electronicsLevels';
 import { stemRegistry } from '../core/stemModule';
 
 interface LevelModalProps {
   mode: AppMode;
   lang: Language;
-  currentLevelId: string;
+  currentLevel: LevelDefinition;
   levels: LevelDefinition[];
   sandbox: LevelDefinition;
   completed: Record<string, number>;
@@ -17,18 +18,27 @@ interface LevelModalProps {
 export const LevelModal: React.FC<LevelModalProps> = ({
   mode,
   lang,
-  currentLevelId,
+  currentLevel,
   levels,
   sandbox,
   completed,
   onSelectLevel,
   onClose,
 }) => {
+  const [activeTier, setActiveTier] = useState<TierId>(currentLevel.isSandbox ? 1 : currentLevel.tier);
   const modules = stemRegistry.list();
+  const filteredLevels = levels.filter((l) => l.tier === activeTier);
+  const activeMeta = TIER_METADATA.find((m) => m.id === activeTier) ?? TIER_METADATA[0];
 
   return (
-    <div className="sheet-backdrop centered" onClick={onClose} role="dialog" aria-modal="true" aria-label={mode === 'kid' ? t(lang, 'kidMissionsHeader') : t(lang, 'adultCampaignHeader')}>
-      <div className="sheet-panel" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="sheet-backdrop centered"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={mode === 'kid' ? t(lang, 'kidMissionsHeader') : t(lang, 'adultCampaignHeader')}
+    >
+      <div className="sheet-panel level-sheet" onClick={(e) => e.stopPropagation()}>
         <div className="sheet-header">
           <h2 className="sheet-title">
             {mode === 'kid' ? t(lang, 'kidMissionsHeader') : t(lang, 'adultCampaignHeader')}
@@ -38,10 +48,39 @@ export const LevelModal: React.FC<LevelModalProps> = ({
           </button>
         </div>
 
+        {/* Tier 1–4 Chapter Tabs */}
+        <div className="tier-tabs" role="tablist">
+          {TIER_METADATA.map((tm) => {
+            const tierLevels = levels.filter((l) => l.tier === tm.id);
+            const doneCount = tierLevels.filter((l) => (completed[l.id] ?? 0) > 0).length;
+            return (
+              <button
+                key={tm.id}
+                type="button"
+                role="tab"
+                aria-selected={activeTier === tm.id}
+                className={`tier-tab ${activeTier === tm.id ? 'active' : ''}`}
+                style={activeTier === tm.id ? { borderColor: tm.accent, color: tm.accent } : undefined}
+                onClick={() => setActiveTier(tm.id)}
+              >
+                <span className="tier-tab-num">{pickText(tm.shortLabel, lang)}</span>
+                <span className="tier-tab-prog">
+                  {doneCount}/{tierLevels.length}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="tier-heading">
+          <span className="tier-dot" style={{ background: activeMeta.accent }} />
+          <strong>{pickText(mode === 'kid' ? activeMeta.kidTitle : activeMeta.adultTitle, lang)}</strong>
+        </div>
+
         <div className="level-grid">
-          {levels.map((lvl) => {
+          {filteredLevels.map((lvl) => {
             const stars = completed[lvl.id] ?? 0;
-            const isCurrent = lvl.id === currentLevelId;
+            const isCurrent = lvl.id === currentLevel.id;
             return (
               <button
                 key={lvl.id}
@@ -68,10 +107,10 @@ export const LevelModal: React.FC<LevelModalProps> = ({
             );
           })}
 
-          {/* Free-Build Sandbox Tile */}
+          {/* Free-Build Sandbox Tile always reachable */}
           <button
             type="button"
-            className={`level-tile ${currentLevelId === sandbox.id ? 'current' : ''}`}
+            className={`level-tile sandbox-tile ${currentLevel.id === sandbox.id ? 'current' : ''}`}
             onClick={() => {
               onSelectLevel(sandbox);
               onClose();
@@ -86,7 +125,6 @@ export const LevelModal: React.FC<LevelModalProps> = ({
           </button>
         </div>
 
-        {/* Modular STEM Platform Strip */}
         <div className="module-roadmap">
           <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-tertiary)' }}>
             {t(lang, 'stemModulesLabel')}

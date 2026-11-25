@@ -26,10 +26,26 @@ function getComponentLabel(kind: string, lang: Language): string {
       return t(lang, 'compToggleSw');
     case 'switch_push':
       return t(lang, 'compPushBtn');
+    case 'switch_spdt':
+      return t(lang, 'compSpdtSw');
     case 'motor':
       return t(lang, 'compMotor');
     case 'buzzer':
       return t(lang, 'compBuzzer');
+    case 'ldr':
+      return t(lang, 'compLdr');
+    case 'thermistor':
+      return t(lang, 'compThermistor');
+    case 'diode':
+      return t(lang, 'compDiode');
+    case 'transistor_npn':
+      return t(lang, 'compNpn');
+    case 'capacitor':
+      return t(lang, 'compCapacitor');
+    case 'inductor':
+      return t(lang, 'compInductor');
+    case 'ac_source':
+      return t(lang, 'compAcSource');
     default:
       return lang === 'pl' ? 'Element' : 'Part';
   }
@@ -55,14 +71,22 @@ export const MultimeterHud: React.FC<MultimeterHudProps> = ({
     const telem = sim.componentStates[probeTarget.id];
     if (comp && telem) {
       title = getComponentLabel(comp.kind, lang);
-      primary =
-        comp.kind === 'led' || comp.kind === 'resistor' || comp.kind === 'rheostat'
-          ? formatCurrent(telem.current)
-          : formatVoltage(Math.abs(telem.voltageDrop));
-      vText = formatVoltage(Math.abs(telem.voltageDrop));
-      iText = formatCurrent(telem.current);
-      pText = formatPower(telem.power);
-      rText = telem.effectiveResistance > 1e6 ? t(lang, 'meterOpen') : formatOhms(telem.effectiveResistance);
+      if (comp.kind === 'transistor_npn') {
+        primary = `Ic ${formatCurrent(telem.current)}`;
+        vText = `Vce ${formatVoltage(telem.voltageDrop)}`;
+        iText = `Ib ${formatCurrent(telem.baseCurrent ?? 0)}`;
+        pText = `Vbe ${formatVoltage(telem.vbe ?? 0)}`;
+        rText = formatPower(telem.power);
+      } else {
+        primary =
+          comp.kind === 'led' || comp.kind === 'resistor' || comp.kind === 'rheostat' || comp.kind === 'inductor'
+            ? formatCurrent(telem.current)
+            : formatVoltage(Math.abs(telem.voltageDrop));
+        vText = formatVoltage(Math.abs(telem.voltageDrop));
+        iText = formatCurrent(telem.current);
+        pText = formatPower(telem.power);
+        rText = telem.effectiveResistance > 1e6 ? t(lang, 'meterOpen') : formatOhms(telem.effectiveResistance);
+      }
       status = telem.statusText;
     }
   } else if (probeTarget?.kind === 'wire') {

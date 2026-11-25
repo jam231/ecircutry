@@ -1260,6 +1260,309 @@ body,
   transform-origin: center;
 }
 
+/* Active Oscilloscope Button */
+.icon-btn.active-scope {
+  background: #162830;
+  color: #3be2c8;
+  border-color: #162830;
+}
+
+/* Contextual Environment Sensor Sliders (Sun/Moon & Cold/Hot) */
+.env-controls {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 22;
+}
+
+.env-slider-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 11px;
+  background: rgba(250, 248, 244, 0.95);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(6px);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-primary);
+}
+
+.env-end-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.env-range {
+  width: 98px;
+  cursor: pointer;
+}
+
+.env-range.light-range {
+  accent-color: #e59a1f;
+}
+
+.env-range.temp-range {
+  accent-color: #d94c30;
+}
+
+.env-val {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  min-width: 34px;
+  text-align: right;
+  color: var(--ink-secondary);
+}
+
+/* Bench Dual-Channel Oscilloscope HUD */
+.scope-hud {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 282px;
+  background: linear-gradient(165deg, #2a333c 0%, #1d242b 100%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 16px;
+  padding: 9px 10px 10px;
+  color: #eef3f5;
+  box-shadow: 0 14px 30px rgba(15, 22, 28, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  z-index: 24;
+  animation: popIn 0.18s ease-out;
+}
+
+.scope-hud.kid-scope {
+  width: 246px;
+  background: linear-gradient(165deg, #1d5753 0%, #153e3c 100%);
+}
+
+.scope-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.scope-title {
+  font-size: 10.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #c5d3dc;
+}
+
+.scope-tabs {
+  display: inline-flex;
+  background: rgba(0, 0, 0, 0.32);
+  padding: 2px;
+  border-radius: 7px;
+}
+
+.scope-tab {
+  border: none;
+  background: transparent;
+  color: #93a6b4;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 7px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.scope-tab.active {
+  background: #3be2c8;
+  color: #102427;
+}
+
+.scope-close {
+  border: none;
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  font-weight: 800;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.scope-screen {
+  background: radial-gradient(circle at 50% 45%, #162b31 0%, #0e1a1f 100%);
+  border: 2px solid #0a1216;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.5);
+  min-height: 114px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scope-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.scope-empty {
+  padding: 16px 12px;
+  font-size: 11.5px;
+  color: #9bb5bf;
+  text-align: center;
+  line-height: 1.4;
+}
+
+.scope-footer {
+  margin-top: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scope-probes {
+  display: flex;
+  gap: 6px;
+}
+
+.scope-probe-btn {
+  flex: 1;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 4px 6px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.scope-probe-btn.ch1 {
+  color: #f5b841;
+}
+
+.scope-probe-btn.ch2 {
+  color: #3be2c8;
+}
+
+.scope-probe-btn.assigning {
+  background: rgba(255, 255, 255, 0.22);
+  border-color: #ffffff;
+}
+
+.scope-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.scope-stat {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #c9d8df;
+  white-space: nowrap;
+}
+
+.scope-mini-btn {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.1);
+  color: #eef3f5;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.scope-mini-btn.paused {
+  background: #e5a31d;
+  color: #1c2228;
+  border-color: transparent;
+}
+
+/* Tier 1–4 Chapter Tabs inside Level Modal */
+.level-sheet {
+  max-width: 600px;
+}
+
+.tier-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.tier-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 6px;
+  border-radius: 12px;
+  border: 1.5px solid var(--border-subtle);
+  background: var(--surface-elevated);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  color: var(--ink-secondary);
+  transition: all 0.14s ease;
+}
+
+.tier-tab.active {
+  background: #fffaf5;
+  box-shadow: var(--shadow-soft);
+}
+
+.tier-tab-num {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.tier-tab-prog {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  opacity: 0.78;
+}
+
+.tier-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 13.5px;
+  color: var(--ink-primary);
+}
+
+.tier-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.ac-inspector-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.inspector-btn.active-wf {
+  background: #3be2c8;
+  color: #102427;
+  border-color: transparent;
+}
+
 /* Responsive Mobile Tweaks */
 @media (max-width: 720px) {
   .top-bar {
@@ -1337,6 +1640,23 @@ body,
     bottom: 10px;
     right: 10px;
     width: 174px;
+  }
+
+  .scope-hud {
+    top: auto;
+    bottom: 8px;
+    right: 8px;
+    width: 232px;
+    padding: 7px 8px;
+  }
+
+  .env-controls {
+    top: 6px;
+    left: 8px;
+  }
+
+  .env-range {
+    width: 74px;
   }
 
   .part-card {
